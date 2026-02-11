@@ -4,7 +4,6 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NEXUS P2P</title>
-<link rel="icon" type="image/png" href="assets/favicon.png">
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.10.3/mqtt.min.js"></script>
@@ -260,8 +259,8 @@ function onWebRTCMsg(from,data){
 async function voiceJoin(){
   if(S.voice.joined)return;
   try{
-    S.voice.micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true,sampleRate:16000}});
-    S.voice.audioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:16000});
+    S.voice.micStream=await navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}});
+    S.voice.audioCtx=new(window.AudioContext||window.webkitAudioContext)();
     // Set up analyser for viz
     S.voice.analyser=S.voice.audioCtx.createAnalyser();
     S.voice.analyser.fftSize=32;
