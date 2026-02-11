@@ -205,7 +205,7 @@ function mqttSendVoice(data){if(!S.mqtt||!S.mqttReady||!S.roomCode)return;data._
 
 function handleRelayMsg(data){
   switch(data.type){
-    case"hello":{const uid=data.user?.id;if(!uid||uid===S.me?.id)break;if(!S.knownUsers.has(uid)){S.knownUsers.set(uid,data.user);sysMsg(data.user.name+" connected");mqttSend({type:"hello",user:S.me});if(S.messages.length)mqttSend({type:"sync",messages:S.messages.filter(m=>!m.system)})}qr();break}
+    case"hello":{const uid=data.user?.id;if(!uid||uid===S.me?.id)break;if(!S.knownUsers.has(uid)){S.knownUsers.set(uid,data.user);sysMsg(data.user.name+" connected");mqttSend({type:"hello",user:S.me});if(S.messages.length)mqttSend({type:"sync",messages:stripFilesForSync(S.messages)})}qr();break}
     case"sync":{const have=new Set(S.messages.map(m=>m.id));const nu=(data.messages||[]).filter(m=>!have.has(m.id));if(nu.length){S.messages.push(...nu);S.messages.sort((a,b)=>a.ts-b.ts);qr();scrollBot()}break}
     case"message":{if(!S.messages.find(m=>m.id===data.msg?.id)){S.messages.push(data.msg);S.typing.delete(data.msg?.userId);qr();scrollBot()}break}
     case"typing":{const uid=data.userId;if(!uid||uid===S.me?.id)break;if(S.typing.has(uid))clearTimeout(S.typing.get(uid));S.typing.set(uid,setTimeout(()=>{S.typing.delete(uid);qr()},3000));qr();break}
@@ -219,10 +219,22 @@ function handleRelayMsg(data){
 // ═══════════════════════════════════════════════════════════════════════════
 // UNIFIED SEND
 // ═══════════════════════════════════════════════════════════════════════════
-function safeSend(c,d){try{if(c?.open){c.send(d);return true}}catch(e){}return false}
+function safeSend(c,d){try{if(c?.open){c.send(JSON.stringify(d));return true}}catch(e){dlog("Send error: "+e.message,false)}return false}
 function broadcast(data){
   if(S.mode==="relay"){mqttSend(data)}
-  else{S.conns.forEach(({conn})=>safeSend(conn,data));if(S.mqttReady)mqttSend(data)}
+  else{
+    // For file messages, check size for WebRTC
+    const json=JSON.stringify(data);
+    const tooBigForRTC=json.length>250000;
+    if(!tooBigForRTC){S.conns.forEach(({conn})=>{try{if(conn?.open)conn.send(json)}catch(e){}})}
+    if(S.mqttReady){
+      // For MQTT, strip file data if too large
+      if(json.length>120000&&data.type==="message"&&data.msg?.file?.data){
+        const lite={...data,msg:{...data.msg,file:{...data.msg.file,data:null,stripped:true}}};
+        mqttSend(lite);
+      }else{mqttSend(data)}
+    }
+  }
 }
 function getPeers(){
   const r=[];
@@ -253,7 +265,7 @@ function connectTo(pid){if(S.conns.has(pid)||pid===S.peer?.id)return;setup(S.pee
 
 function onWebRTCMsg(from,data){
   switch(data.type){
-    case"hello":{const e=S.conns.get(from);if(!e)break;e.user=data.user;S.knownUsers.set(from,data.user);if(!e.helloed){safeSend(e.conn,{type:"hello",user:S.me});e.helloed=true;if(S.messages.length)safeSend(e.conn,{type:"sync",messages:S.messages.filter(m=>!m.system)})}setTimeout(()=>{const ids=[...S.conns.keys()].filter(id=>id!==from);if(ids.length)safeSend(e.conn,{type:"peers",ids})},800);sysMsg(data.user.name+" connected");qr();break}
+    case"hello":{const e=S.conns.get(from);if(!e)break;e.user=data.user;S.knownUsers.set(from,data.user);if(!e.helloed){safeSend(e.conn,{type:"hello",user:S.me});e.helloed=true;if(S.messages.length)safeSend(e.conn,{type:"sync",messages:stripFilesForSync(S.messages)})}setTimeout(()=>{const ids=[...S.conns.keys()].filter(id=>id!==from);if(ids.length)safeSend(e.conn,{type:"peers",ids})},800);sysMsg(data.user.name+" connected");qr();break}
     case"sync":{const have=new Set(S.messages.map(m=>m.id));const nu=(data.messages||[]).filter(m=>!have.has(m.id));if(nu.length){S.messages.push(...nu);S.messages.sort((a,b)=>a.ts-b.ts);qr();scrollBot()}break}
     case"message":{if(!S.messages.find(m=>m.id===data.msg?.id)){S.messages.push(data.msg);S.typing.delete(data.msg?.userId);qr();scrollBot()}break}
     case"typing":{const uid=data.userId||from;if(S.typing.has(uid))clearTimeout(S.typing.get(uid));S.typing.set(uid,setTimeout(()=>{S.typing.delete(uid);qr()},3000));qr();break}
@@ -406,31 +418,44 @@ function fmtSize(b){if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(
 // Safe base64 encode for large arrays (avoids stack overflow)
 function toBase64(uint8){let b="";const C=8192;for(let i=0;i<uint8.length;i+=C){b+=String.fromCharCode.apply(null,uint8.subarray(i,i+C))}return btoa(b)}
 
+// Strip large file data from messages for sync (keeps metadata, removes base64 blob)
+function stripFilesForSync(msgs){
+  return msgs.filter(m=>!m.system).map(m=>{
+    if(m.file&&m.file.data){return{...m,file:{...m.file,data:null,stripped:true}}}
+    return m;
+  });
+}
+
 async function sendFile(file){
   const maxSize=S.mode==="p2p"?MAX_FILE_P2P:MAX_FILE_RELAY;
   if(file.size>maxSize){
     sysMsg("File too large ("+fmtSize(file.size)+"). Max "+fmtSize(maxSize)+" in "+(S.mode==="p2p"?"P2P":"relay")+" mode.");
     return;
   }
-  const cat=fileCategory(file.name,file.type);
-  const buf=await file.arrayBuffer();
-  const b64=toBase64(new Uint8Array(buf));
+  try{
+    const cat=fileCategory(file.name,file.type);
+    const buf=await file.arrayBuffer();
+    const b64=toBase64(new Uint8Array(buf));
+    dlog("File: "+file.name+" ("+fmtSize(file.size)+") b64:"+Math.round(b64.length/1024)+"KB");
 
-  const msg={
-    id:S.me.id+"-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),
-    userId:S.me.id,userName:S.me.name,userColor:S.me.color,userAvatar:S.me.avatar,
-    content:"",ts:Date.now(),
-    file:{name:file.name,size:file.size,type:file.type,cat,data:b64}
-  };
+    const msg={
+      id:S.me.id+"-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),
+      userId:S.me.id,userName:S.me.name,userColor:S.me.color,userAvatar:S.me.avatar,
+      content:"",ts:Date.now(),
+      file:{name:file.name,size:file.size,type:file.type,cat,data:b64}
+    };
 
-  // For image preview, generate thumbnail if large
-  if(cat==="image"&&file.size<MAX_FILE_P2P){
-    msg.file.isImage=true;
+    if(cat==="image"&&file.size<MAX_FILE_P2P){
+      msg.file.isImage=true;
+    }
+
+    S.messages.push(msg);
+    broadcast({type:"message",msg});
+    qr();scrollBot();
+  }catch(e){
+    dlog("File send error: "+e.message,false);
+    sysMsg("Failed to send file: "+e.message);
   }
-
-  S.messages.push(msg);
-  broadcast({type:"message",msg});
-  qr();scrollBot();
 }
 
 function downloadFile(msgId){
@@ -454,12 +479,12 @@ function renderFileMsg(msg){
   const cat=f.cat||fileCategory(f.name,f.type);
   const icon=fileIcon(cat);
   const cls=fileIconClass(cat);
-  let html='<div class="file-msg" onclick="downloadFile(\''+msg.id+'\')" title="Click to download">';
+  const canDownload=f.data&&!f.stripped;
+  let html='<div class="file-msg"'+(canDownload?' onclick="downloadFile(\''+msg.id+'\')" title="Click to download" style="cursor:pointer"':' title="File shared in earlier session" style="cursor:default;opacity:.7"')+'>';
   html+='<div class="file-icon '+cls+'">'+icon+'</div>';
   html+='<div style="flex:1;min-width:0"><div class="file-name">'+esc(f.name)+'</div>';
-  html+='<div class="file-size">'+fmtSize(f.size)+' • Click to download</div></div></div>';
-  // Image preview
-  if(f.isImage&&f.data){
+  html+='<div class="file-size">'+fmtSize(f.size)+(canDownload?' • Click to download':' • No longer available')+'</div></div></div>';
+  if(canDownload&&f.isImage&&f.data){
     html+='<img class="file-img-preview" src="data:'+(f.type||"image/png")+';base64,'+f.data+'" alt="'+esc(f.name)+'">';
   }
   return html;
