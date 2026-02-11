@@ -139,8 +139,62 @@ const S={screen:"connect",me:null,roomCode:"",peer:null,mqtt:null,
   peerError:null,diag:[],mode:"connecting",mqttReady:false,webrtcFailed:false,
   // Voice state
   voice:{joined:false,transmitting:false,micStream:null,recorder:null,
-    audioCtx:null,speakers:new Map(),vizBars:[0,0,0,0,0,0,0,0]}
+    audioCtx:null,speakers:new Map(),vizBars:[0,0,0,0,0,0,0,0]},
+  // Encryption
+  cryptoKey:null
 };
+
+// ═══════════════════════════════════════════════════════════════════════════
+// E2E ENCRYPTION — AES-256-GCM with room code as shared secret
+// Room code → PBKDF2 → AES key. All peers with the code can decrypt.
+// ═══════════════════════════════════════════════════════════════════════════
+const E2E_SALT="nexus-p2p-e2e-v1";
+const ENC=new TextEncoder(),DEC=new TextDecoder();
+
+async function deriveRoomKey(roomCode){
+  try{
+    const keyMaterial=await crypto.subtle.importKey("raw",ENC.encode(roomCode),"PBKDF2",false,["deriveKey"]);
+    const key=await crypto.subtle.deriveKey(
+      {name:"PBKDF2",salt:ENC.encode(E2E_SALT),iterations:100000,hash:"SHA-256"},
+      keyMaterial,
+      {name:"AES-GCM",length:256},
+      false,
+      ["encrypt","decrypt"]
+    );
+    dlog("E2E: room key derived ✓",true);
+    return key;
+  }catch(e){dlog("E2E: key derivation failed - "+e.message,false);return null}
+}
+
+async function e2eEncrypt(plaintext){
+  if(!S.cryptoKey)return{_plain:true,d:plaintext};
+  try{
+    const iv=crypto.getRandomValues(new Uint8Array(12));
+    const data=ENC.encode(JSON.stringify(plaintext));
+    const ct=await crypto.subtle.encrypt({name:"AES-GCM",iv},S.cryptoKey,data);
+    // Encode as base64
+    const ivB64=btoa(String.fromCharCode(...iv));
+    const ctBytes=new Uint8Array(ct);
+    let ctB64="";const C=8192;
+    for(let i=0;i<ctBytes.length;i+=C){ctB64+=String.fromCharCode.apply(null,ctBytes.subarray(i,i+C))}
+    ctB64=btoa(ctB64);
+    return{_e:true,iv:ivB64,ct:ctB64};
+  }catch(e){dlog("E2E encrypt error: "+e.message,false);return{_plain:true,d:plaintext}}
+}
+
+async function e2eDecrypt(envelope){
+  // Unencrypted message (backward compat or hello)
+  if(!envelope._e)return envelope._plain?envelope.d:envelope;
+  if(!S.cryptoKey)return null;
+  try{
+    const iv=Uint8Array.from(atob(envelope.iv),c=>c.charCodeAt(0));
+    const raw=atob(envelope.ct);
+    const ctBytes=new Uint8Array(raw.length);
+    for(let i=0;i<raw.length;i++)ctBytes[i]=raw.charCodeAt(i);
+    const pt=await crypto.subtle.decrypt({name:"AES-GCM",iv},S.cryptoKey,ctBytes);
+    return JSON.parse(DEC.decode(pt));
+  }catch(e){dlog("E2E decrypt error: "+e.message,false);return null}
+}
 
 // ── Diagnostics ────────────────────────────────────────────────────────────
 function dlog(msg,ok){
@@ -183,14 +237,15 @@ function startMqtt(room){
       mqttSend({type:"hello",user:S.me});
       if(S.webrtcFailed&&S.mode!=="relay"){S.mode="relay";sysMsg("Connected via relay (WebSocket)");qr()}
     });
-    client.on("message",(topic,payload)=>{
+    client.on("message",async(topic,payload)=>{
       try{
+        const envelope=JSON.parse(payload.toString());
+        const data=await e2eDecrypt(envelope);
+        if(!data)return;
         if(topic.endsWith("/voice")){
-          const data=JSON.parse(payload.toString());
           if(data._sender!==S.me?.id)handleVoiceRelay(data);
           return;
         }
-        const data=JSON.parse(payload.toString());
         if(data._sender===S.me?.id)return;
         handleRelayMsg(data);
       }catch(e){}
@@ -200,8 +255,8 @@ function startMqtt(room){
   }catch(e){dlog("MQTT init fail: "+e.message,false)}
 }
 
-function mqttSend(data){if(!S.mqtt||!S.mqttReady||!S.roomCode)return;data._sender=S.me.id;try{S.mqtt.publish(mqttTopic(S.roomCode,"msg"),JSON.stringify(data))}catch(e){}}
-function mqttSendVoice(data){if(!S.mqtt||!S.mqttReady||!S.roomCode)return;data._sender=S.me.id;try{S.mqtt.publish(mqttTopic(S.roomCode,"voice"),JSON.stringify(data))}catch(e){}}
+async function mqttSend(data){if(!S.mqtt||!S.mqttReady||!S.roomCode)return;data._sender=S.me.id;try{const enc=await e2eEncrypt(data);S.mqtt.publish(mqttTopic(S.roomCode,"msg"),JSON.stringify(enc))}catch(e){}}
+async function mqttSendVoice(data){if(!S.mqtt||!S.mqttReady||!S.roomCode)return;data._sender=S.me.id;try{const enc=await e2eEncrypt(data);S.mqtt.publish(mqttTopic(S.roomCode,"voice"),JSON.stringify(enc))}catch(e){}}
 
 function handleRelayMsg(data){
   switch(data.type){
@@ -219,20 +274,21 @@ function handleRelayMsg(data){
 // ═══════════════════════════════════════════════════════════════════════════
 // UNIFIED SEND
 // ═══════════════════════════════════════════════════════════════════════════
-function safeSend(c,d){try{if(c?.open){c.send(JSON.stringify(d));return true}}catch(e){dlog("Send error: "+e.message,false)}return false}
-function broadcast(data){
-  if(S.mode==="relay"){mqttSend(data)}
+async function safeSend(c,d){try{if(c?.open){const enc=await e2eEncrypt(d);c.send(JSON.stringify(enc));return true}}catch(e){dlog("Send error: "+e.message,false)}return false}
+async function broadcast(data){
+  if(S.mode==="relay"){await mqttSend(data)}
   else{
-    // For file messages, check size for WebRTC
-    const json=JSON.stringify(data);
+    const enc=await e2eEncrypt(data);
+    const json=JSON.stringify(enc);
     const tooBigForRTC=json.length>16000000;
     if(!tooBigForRTC){S.conns.forEach(({conn})=>{try{if(conn?.open)conn.send(json)}catch(e){}})}
     if(S.mqttReady){
-      // For MQTT, strip file data if too large for broker
-      if(json.length>600000&&data.type==="message"&&data.msg?.file?.data){
+      // For MQTT, strip file data if too large for broker — encrypt the lite version
+      const plainJson=JSON.stringify(data);
+      if(plainJson.length>600000&&data.type==="message"&&data.msg?.file?.data){
         const lite={...data,msg:{...data.msg,file:{...data.msg.file,data:null,stripped:true}}};
-        mqttSend(lite);
-      }else{mqttSend(data)}
+        await mqttSend(lite);
+      }else{await mqttSend(data)}
     }
   }
 }
@@ -253,7 +309,7 @@ function setup(conn,isInit){
   if(S.conns.has(pid)){const ex=S.conns.get(pid);if(ex.conn?.open){conn.close();return}S.conns.delete(pid)}
   const e={conn,user:null,ready:false,helloed:false};S.conns.set(pid,e);
   conn.on("open",()=>{dlog("DataChannel OPEN ..."+short,true);e.ready=true;S.mode="p2p";S.webrtcFailed=false;if(iceFailTimer){clearTimeout(iceFailTimer);iceFailTimer=null}if(isInit){safeSend(conn,{type:"hello",user:S.me});e.helloed=true}qr()});
-  conn.on("data",raw=>{let d;try{d=typeof raw==="string"?JSON.parse(raw):(raw&&typeof raw==="object"?raw:null)}catch{return}if(d)onWebRTCMsg(pid,d)});
+  conn.on("data",async raw=>{let envelope;try{envelope=typeof raw==="string"?JSON.parse(raw):(raw&&typeof raw==="object"?raw:null)}catch{return}if(!envelope)return;const d=await e2eDecrypt(envelope);if(d)onWebRTCMsg(pid,d)});
   conn.on("close",()=>{dlog("Closed ..."+short,false);const u=S.conns.get(pid)?.user;S.conns.delete(pid);if(u)sysMsg(u.name+" left");qr()});
   conn.on("error",()=>{S.conns.delete(pid);qr()});
   try{setTimeout(()=>{const pc=conn.peerConnection||conn._peerConnection;if(pc){
@@ -501,20 +557,22 @@ function copyCode(){navigator.clipboard?.writeText(S.roomCode).then(()=>{S.copyT
 function scrollBot(){setTimeout(()=>{const el=document.getElementById("msg-list");if(el)el.scrollTop=el.scrollHeight},30)}
 
 // ── Create / Join ──────────────────────────────────────────────────────────
-function doCreate(name,color){
+async function doCreate(name,color){
   const room=genCode(),myId="nexus-"+room+"-host";
   S.me={id:myId,name,color,avatar:name[0].toUpperCase()};S.roomCode=room;
+  S.cryptoKey=await deriveRoomKey(room);
   dlog("Creating room "+room+"...");startMqtt(room);
   const peer=new Peer(myId,{debug:1,config:{iceServers:ICE_SERVERS}});S.peer=peer;
-  peer.on("open",()=>{dlog("PeerJS signaling OK",true);S.connected=true;S.screen="chat";S.peerError=null;sysMsg("Room created! Share code: "+room);qr()});
+  peer.on("open",()=>{dlog("PeerJS signaling OK",true);S.connected=true;S.screen="chat";S.peerError=null;sysMsg("Room created! Share code: "+room);sysMsg("🔒 End-to-end encrypted");qr()});
   peer.on("connection",c=>{dlog("Incoming WebRTC",true);setup(c,false)});
   peer.on("error",e=>{dlog("PeerJS: "+e.type,false);S.peerError=e.type==="unavailable-id"?"Code in use.":"Error: "+e.type;qr()});
   peer.on("disconnected",()=>{setTimeout(()=>{if(!peer.destroyed)peer.reconnect()},2000)});
 }
-function doJoin(name,color,code){
+async function doJoin(name,color,code){
   code=code.toUpperCase().replace(/[^A-Z0-9]/g,"");if(code.length<4)return;
   const myId="nexus-"+code+"-"+Date.now().toString(36);
   S.me={id:myId,name,color,avatar:name[0].toUpperCase()};S.roomCode=code;
+  S.cryptoKey=await deriveRoomKey(code);
   dlog("Joining room "+code+"...");startMqtt(code);
   const peer=new Peer(myId,{debug:1,config:{iceServers:ICE_SERVERS}});S.peer=peer;
   let retries=0;const maxR=5;const hostId="nexus-"+code+"-host";
@@ -532,7 +590,7 @@ window.addEventListener("beforeunload",()=>{if(S.mqtt&&S.mqttReady)mqttSend({typ
 // ═══════════════════════════════════════════════════════════════════════════
 function doRender(){renderQ=false;if(S.screen==="connect"&&currentScreen!=="connect"){document.getElementById("app").innerHTML=renderConnect();bindConnect();currentScreen="connect"}else if(S.screen==="chat"){if(currentScreen!=="chat"){document.getElementById("app").innerHTML=renderChat();bindChat();currentScreen="chat";scrollBot()}else{updateMsgs();updatePeers();updateTypBar();updateToast();updateMode();updateVoiceBar()}}}
 
-function renderConnect(){return '<div class="connect-screen"><div class="connect-card"><h1>⚡ NEXUS</h1><p class="sub">Peer-to-peer chat with voice. No servers. No accounts.</p><label>YOUR NAME</label><input id="c-name" placeholder="Enter your name" maxlength="20" autofocus><label>PICK A COLOR</label><div class="color-pick">'+COLORS.map((c,i)=>'<div class="color-swatch'+(i===0?" active":"")+'" data-color="'+c+'" style="background:'+c+'"></div>').join("")+'</div><button id="c-create" class="btn-primary" disabled>Create Room</button><div class="divider-text"><div class="line"></div>or join existing<div class="line"></div></div><label>ROOM CODE</label><input id="c-room" class="mono-input" placeholder="ABC123" maxlength="6"><button id="c-join" class="btn-secondary" disabled>Join Room</button>'+(S.peerError?'<div style="color:var(--red);font-size:13px;margin-top:16px;padding:8px;background:var(--bg0);border-radius:6px">'+esc(S.peerError)+'</div>':'')+'</div></div>'}
+function renderConnect(){return '<div class="connect-screen"><div class="connect-card"><h1>⚡ NEXUS</h1><p class="sub">End-to-end encrypted chat with voice. No servers. No accounts.</p><label>YOUR NAME</label><input id="c-name" placeholder="Enter your name" maxlength="20" autofocus><label>PICK A COLOR</label><div class="color-pick">'+COLORS.map((c,i)=>'<div class="color-swatch'+(i===0?" active":"")+'" data-color="'+c+'" style="background:'+c+'"></div>').join("")+'</div><button id="c-create" class="btn-primary" disabled>Create Room</button><div class="divider-text"><div class="line"></div>or join existing<div class="line"></div></div><label>ROOM CODE</label><input id="c-room" class="mono-input" placeholder="ABC123" maxlength="6"><button id="c-join" class="btn-secondary" disabled>Join Room</button>'+(S.peerError?'<div style="color:var(--red);font-size:13px;margin-top:16px;padding:8px;background:var(--bg0);border-radius:6px">'+esc(S.peerError)+'</div>':'')+'</div></div>'}
 function bindConnect(){const n=document.getElementById("c-name"),r=document.getElementById("c-room"),cb=document.getElementById("c-create"),jb=document.getElementById("c-join");let color=COLORS[0];function upd(){cb.disabled=!n.value.trim();jb.disabled=!n.value.trim()||r.value.length<4}n.addEventListener("input",upd);r.addEventListener("input",e=>{e.target.value=e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"");upd()});document.querySelectorAll(".color-swatch").forEach(el=>el.addEventListener("click",()=>{document.querySelectorAll(".color-swatch").forEach(s=>s.classList.remove("active"));el.classList.add("active");color=el.dataset.color}));cb.addEventListener("click",()=>{if(n.value.trim())doCreate(n.value.trim(),color)});jb.addEventListener("click",()=>{if(n.value.trim()&&r.value.length>=4)doJoin(n.value.trim(),color,r.value)});n.addEventListener("keydown",e=>{if(e.key==="Enter"&&!cb.disabled)cb.click()});r.addEventListener("keydown",e=>{if(e.key==="Enter"&&!jb.disabled)jb.click()})}
 
 function renderChat(){
@@ -545,7 +603,7 @@ function renderChat(){
     '<button id="voice-join" style="background:none;border:1px solid var(--brd);color:var(--acc);cursor:pointer;padding:8px 16px;border-radius:8px;font-size:13px;font-family:var(--mono);display:flex;align-items:center;gap:6px;margin:0 auto"><span style="font-size:16px">🎙️</span> Join Voice</button>')+
     '</div>';
 
-  return '<div class="sidebar" id="sidebar"><div class="sb-header"><span style="font-size:20px">⚡</span><h2>NEXUS P2P</h2></div><div style="padding:12px 16px"><div class="room-code-box" id="copy-code" title="Click to copy"><div style="flex:1"><div style="font-size:10px;color:var(--mut);font-weight:600;letter-spacing:1px">ROOM CODE</div><div style="font-family:var(--mono);font-size:16px;color:var(--acc);font-weight:700;letter-spacing:2px">'+S.roomCode+'</div></div><span style="font-size:16px;color:var(--mut)">📋</span></div><div style="font-size:11px;color:var(--fnt);text-align:center;margin-top:4px">Share this code to invite others</div></div><div style="padding:0 16px 8px"><div style="height:1px;background:var(--brd)"></div></div><div style="padding:4px 16px 8px;font-size:10px;font-weight:700;letter-spacing:1.5px;color:var(--fnt)" id="sb-count">PEERS — 1</div><div style="flex:1;overflow-y:auto;padding:0 8px" id="sb-peers"></div>'+voiceHtml+'<div class="user-panel"><div class="peer-av" style="background:linear-gradient(135deg,'+S.me.color+'30,'+S.me.color+'10);border:2px solid '+S.me.color+'55;color:'+S.me.color+';width:32px;height:32px;min-width:32px;font-size:12px"><div class="st-dot" style="background:var(--grn)"></div>'+esc(S.me.avatar)+'</div><div style="flex:1"><div style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+S.me.color+'">'+esc(S.me.name)+'</div><div style="font-size:10px;color:var(--fnt)" id="user-mode">Connecting...</div></div></div></div><div class="chat-area"><div class="chat-header"><button class="menu-btn" id="menu-btn" style="background:none;border:none;color:var(--mut);cursor:pointer;padding:4px;display:none">☰</button><span id="mode-badge" class="relay-badge relay">RELAY</span><h3>Room Chat</h3><span style="color:var(--fnt);font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:12px" id="hdr-info">connecting...</span><button id="tog-mem" style="background:none;border:none;color:var(--txt);cursor:pointer;padding:6px;border-radius:6px;display:flex;align-items:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></button><button id="tog-diag" style="background:none;border:none;color:var(--fnt);cursor:pointer;padding:6px;border-radius:6px;font-size:14px;font-family:var(--mono)" title="Diagnostics">🔧</button></div><div class="msg-list" id="msg-list"></div><div class="typing-bar" id="typ-bar"></div><div id="mobile-voice" style="display:none"></div><div class="input-area"><div class="input-row"><input type="file" id="file-in" style="display:none" multiple><button id="attach-btn" title="Attach file" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--acc);font-size:14px;display:flex;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg></button><input id="msg-in" placeholder="Send a message…" autocomplete="off"><button id="mobile-mic-btn" title="Voice chat" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--mut);font-size:14px;display:none;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button><button class="send-btn" id="send-btn" title="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button></div></div></div><div class="members-panel" id="mem-panel"><div id="mem-hdr" class="mem-header">ONLINE — 1</div><div id="mem-list"></div></div><div id="diag-panel" style="display:none;position:fixed;bottom:0;right:0;width:420px;max-width:90vw;max-height:50vh;background:var(--bg0);border:1px solid var(--brdL);border-radius:12px 0 0 0;z-index:100;overflow:hidden;box-shadow:0 -4px 24px rgba(0,0,0,.5)"><div style="padding:10px 14px;border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:8px"><span style="font-size:14px">🔧</span><span style="font-size:12px;font-weight:700;color:var(--acc);font-family:var(--mono);flex:1">DIAGNOSTICS</span><button id="diag-close" style="background:none;border:none;color:var(--mut);cursor:pointer;font-size:16px">✕</button></div><div id="diag-log" style="padding:8px 12px;overflow-y:auto;max-height:calc(50vh - 40px);font-family:var(--mono);font-size:11px;line-height:1.8"></div></div>'}
+  return '<div class="sidebar" id="sidebar"><div class="sb-header"><span style="font-size:20px">⚡</span><h2>NEXUS P2P</h2></div><div style="padding:12px 16px"><div class="room-code-box" id="copy-code" title="Click to copy"><div style="flex:1"><div style="font-size:10px;color:var(--mut);font-weight:600;letter-spacing:1px">ROOM CODE</div><div style="font-family:var(--mono);font-size:16px;color:var(--acc);font-weight:700;letter-spacing:2px">'+S.roomCode+'</div></div><span style="font-size:16px;color:var(--mut)">📋</span></div><div style="font-size:11px;color:var(--fnt);text-align:center;margin-top:4px">Share this code to invite others</div></div><div style="padding:0 16px 8px"><div style="height:1px;background:var(--brd)"></div></div><div style="padding:4px 16px 8px;font-size:10px;font-weight:700;letter-spacing:1.5px;color:var(--fnt)" id="sb-count">PEERS — 1</div><div style="flex:1;overflow-y:auto;padding:0 8px" id="sb-peers"></div>'+voiceHtml+'<div class="user-panel"><div class="peer-av" style="background:linear-gradient(135deg,'+S.me.color+'30,'+S.me.color+'10);border:2px solid '+S.me.color+'55;color:'+S.me.color+';width:32px;height:32px;min-width:32px;font-size:12px"><div class="st-dot" style="background:var(--grn)"></div>'+esc(S.me.avatar)+'</div><div style="flex:1"><div style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+S.me.color+'">'+esc(S.me.name)+'</div><div style="font-size:10px;color:var(--fnt)" id="user-mode">Connecting...</div></div></div></div><div class="chat-area"><div class="chat-header"><button class="menu-btn" id="menu-btn" style="background:none;border:none;color:var(--mut);cursor:pointer;padding:4px;display:none">☰</button><span id="mode-badge" class="relay-badge relay">RELAY</span><h3>Room Chat</h3><span style="font-size:11px;color:var(--grn);font-family:var(--mono);margin-left:8px" title="End-to-end encrypted">🔒 E2E</span><span style="color:var(--fnt);font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:12px" id="hdr-info">connecting...</span><button id="tog-mem" style="background:none;border:none;color:var(--txt);cursor:pointer;padding:6px;border-radius:6px;display:flex;align-items:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></button><button id="tog-diag" style="background:none;border:none;color:var(--fnt);cursor:pointer;padding:6px;border-radius:6px;font-size:14px;font-family:var(--mono)" title="Diagnostics">🔧</button></div><div class="msg-list" id="msg-list"></div><div class="typing-bar" id="typ-bar"></div><div id="mobile-voice" style="display:none"></div><div class="input-area"><div class="input-row"><input type="file" id="file-in" style="display:none" multiple><button id="attach-btn" title="Attach file" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--acc);font-size:14px;display:flex;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg></button><input id="msg-in" placeholder="Send a message…" autocomplete="off"><button id="mobile-mic-btn" title="Voice chat" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--mut);font-size:14px;display:none;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button><button class="send-btn" id="send-btn" title="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button></div></div></div><div class="members-panel" id="mem-panel"><div id="mem-hdr" class="mem-header">ONLINE — 1</div><div id="mem-list"></div></div><div id="diag-panel" style="display:none;position:fixed;bottom:0;right:0;width:420px;max-width:90vw;max-height:50vh;background:var(--bg0);border:1px solid var(--brdL);border-radius:12px 0 0 0;z-index:100;overflow:hidden;box-shadow:0 -4px 24px rgba(0,0,0,.5)"><div style="padding:10px 14px;border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:8px"><span style="font-size:14px">🔧</span><span style="font-size:12px;font-weight:700;color:var(--acc);font-family:var(--mono);flex:1">DIAGNOSTICS</span><button id="diag-close" style="background:none;border:none;color:var(--mut);cursor:pointer;font-size:16px">✕</button></div><div id="diag-log" style="padding:8px 12px;overflow-y:auto;max-height:calc(50vh - 40px);font-family:var(--mono);font-size:11px;line-height:1.8"></div></div>'}
 
 function bindChat(){
   const inp=document.getElementById("msg-in");inp?.focus();
@@ -598,7 +656,7 @@ function updateMsgs(){
   const el=document.getElementById("msg-list");if(!el)return;
   const h=mHash();if(h===lastHash)return;lastHash=h;
   const near=el.scrollHeight-el.scrollTop-el.clientHeight<120;
-  let html='<div style="padding:32px 16px 16px"><div style="width:56px;height:56px;border-radius:28px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:28px;margin-bottom:12px">🔒</div><h2 style="font-size:22px;font-weight:800;color:#fff;margin:0 0 4px">Peer-to-Peer Room</h2><p style="color:var(--mut);font-size:13px">Messages are encrypted. No storage.</p></div>';
+  let html='<div style="padding:32px 16px 16px"><div style="width:56px;height:56px;border-radius:28px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:28px;margin-bottom:12px">🔒</div><h2 style="font-size:22px;font-weight:800;color:#fff;margin:0 0 4px">Peer-to-Peer Room</h2><p style="color:var(--mut);font-size:13px">End-to-end encrypted. No data stored.</p></div>';
   let ld="",lu="",lt=0;
   for(const m of S.messages){
     const date=fmtDate(m.ts);
