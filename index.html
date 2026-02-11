@@ -99,6 +99,17 @@ function fmtDate(ts){const d=new Date(ts),n=new Date();if(n-d<86400000&&d.getDat
 function esc(s){if(!s)return"";const d=document.createElement("div");d.textContent=s;return d.innerHTML}
 
 const S={screen:"connect",me:null,roomCode:"",peer:null,conns:new Map(),knownUsers:new Map(),messages:[],typing:new Map(),connected:false,showMembers:true,mobileSidebar:false,copyToast:false,peerError:null};
+
+// ICE servers: STUN for direct connections, TURN for relay when behind VPNs/strict NAT
+const ICE_SERVERS=[
+  {urls:"stun:stun.l.google.com:19302"},
+  {urls:"stun:stun1.l.google.com:19302"},
+  {urls:"stun:stun.relay.metered.ca:80"},
+  {urls:"turn:openrelay.metered.ca:80",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turn:openrelay.metered.ca:443?transport=tcp",username:"openrelayproject",credential:"openrelayproject"},
+  {urls:"turns:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"}
+];
 let renderQ=false,currentScreen=null;
 function qr(){if(!renderQ){renderQ=true;requestAnimationFrame(doRender)}}
 
@@ -141,8 +152,8 @@ function sysMsg(t){S.messages.push({id:"sys-"+Date.now()+Math.random().toString(
 function copyCode(){navigator.clipboard?.writeText(S.roomCode).then(()=>{S.copyToast=true;qr();setTimeout(()=>{S.copyToast=false;qr()},2000)})}
 function scrollBot(){setTimeout(()=>{const el=document.getElementById("msg-list");if(el)el.scrollTop=el.scrollHeight},30)}
 
-function doCreate(name,color){const room=genCode(),myId="nexus-"+room+"-host";S.me={id:myId,name,color,avatar:name[0].toUpperCase()};S.roomCode=room;const peer=new Peer(myId,{debug:0});S.peer=peer;peer.on("open",()=>{S.connected=true;S.screen="chat";S.peerError=null;sysMsg("Room created! Share code: "+room);qr()});peer.on("connection",c=>setup(c,false));peer.on("error",e=>{S.peerError=e.type==="unavailable-id"?"Code in use.":"Error: "+e.type;qr()});peer.on("disconnected",()=>{setTimeout(()=>{if(!peer.destroyed)peer.reconnect()},2000)})}
-function doJoin(name,color,code){code=code.toUpperCase().replace(/[^A-Z0-9]/g,"");if(code.length<4)return;const myId="nexus-"+code+"-"+Date.now().toString(36);S.me={id:myId,name,color,avatar:name[0].toUpperCase()};S.roomCode=code;const peer=new Peer(myId,{debug:0});S.peer=peer;let retries=0;const maxRetries=5;const hostId="nexus-"+code+"-host";function tryConnect(){if(retries>=maxRetries){sysMsg("Could not find room host after "+maxRetries+" attempts. Check the code and try again.");return}retries++;console.log("Connecting to host, attempt "+retries);connectTo(hostId)}peer.on("open",()=>{S.connected=true;S.screen="chat";S.peerError=null;qr();setTimeout(tryConnect,300)});peer.on("connection",c=>setup(c,false));peer.on("error",e=>{console.warn("Peer error:",e.type,e);if(e.type==="peer-unavailable"&&S.screen==="chat"&&retries<maxRetries){const delay=1000*retries;sysMsg("Connecting to room... (attempt "+(retries+1)+")");setTimeout(tryConnect,delay)}else if(S.screen==="connect"){S.peerError=e.type==="peer-unavailable"?"Room not found. Check the code.":"Error: "+e.type;qr()}});peer.on("disconnected",()=>{setTimeout(()=>{if(!peer.destroyed)peer.reconnect()},2000)})}
+function doCreate(name,color){const room=genCode(),myId="nexus-"+room+"-host";S.me={id:myId,name,color,avatar:name[0].toUpperCase()};S.roomCode=room;const peer=new Peer(myId,{debug:0,config:{iceServers:ICE_SERVERS}});S.peer=peer;peer.on("open",()=>{S.connected=true;S.screen="chat";S.peerError=null;sysMsg("Room created! Share code: "+room);qr()});peer.on("connection",c=>setup(c,false));peer.on("error",e=>{S.peerError=e.type==="unavailable-id"?"Code in use.":"Error: "+e.type;qr()});peer.on("disconnected",()=>{setTimeout(()=>{if(!peer.destroyed)peer.reconnect()},2000)})}
+function doJoin(name,color,code){code=code.toUpperCase().replace(/[^A-Z0-9]/g,"");if(code.length<4)return;const myId="nexus-"+code+"-"+Date.now().toString(36);S.me={id:myId,name,color,avatar:name[0].toUpperCase()};S.roomCode=code;const peer=new Peer(myId,{debug:0,config:{iceServers:ICE_SERVERS}});S.peer=peer;let retries=0;const maxRetries=5;const hostId="nexus-"+code+"-host";function tryConnect(){if(retries>=maxRetries){sysMsg("Could not find room host after "+maxRetries+" attempts. Check the code and try again.");return}retries++;console.log("Connecting to host, attempt "+retries);connectTo(hostId)}peer.on("open",()=>{S.connected=true;S.screen="chat";S.peerError=null;qr();setTimeout(tryConnect,300)});peer.on("connection",c=>setup(c,false));peer.on("error",e=>{console.warn("Peer error:",e.type,e);if(e.type==="peer-unavailable"&&S.screen==="chat"&&retries<maxRetries){const delay=1000*retries;sysMsg("Connecting to room... (attempt "+(retries+1)+")");setTimeout(tryConnect,delay)}else if(S.screen==="connect"){S.peerError=e.type==="peer-unavailable"?"Room not found. Check the code.":"Error: "+e.type;qr()}});peer.on("disconnected",()=>{setTimeout(()=>{if(!peer.destroyed)peer.reconnect()},2000)})}
 
 function doRender(){renderQ=false;if(S.screen==="connect"&&currentScreen!=="connect"){document.getElementById("app").innerHTML=renderConnect();bindConnect();currentScreen="connect"}else if(S.screen==="chat"){if(currentScreen!=="chat"){document.getElementById("app").innerHTML=renderChat();bindChat();currentScreen="chat";scrollBot()}else{updateMsgs();updatePeers();updateTypBar();updateToast()}}}
 
