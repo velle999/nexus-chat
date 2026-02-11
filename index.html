@@ -225,11 +225,11 @@ function broadcast(data){
   else{
     // For file messages, check size for WebRTC
     const json=JSON.stringify(data);
-    const tooBigForRTC=json.length>250000;
+    const tooBigForRTC=json.length>16000000;
     if(!tooBigForRTC){S.conns.forEach(({conn})=>{try{if(conn?.open)conn.send(json)}catch(e){}})}
     if(S.mqttReady){
-      // For MQTT, strip file data if too large
-      if(json.length>120000&&data.type==="message"&&data.msg?.file?.data){
+      // For MQTT, strip file data if too large for broker
+      if(json.length>600000&&data.type==="message"&&data.msg?.file?.data){
         const lite={...data,msg:{...data.msg,file:{...data.msg.file,data:null,stripped:true}}};
         mqttSend(lite);
       }else{mqttSend(data)}
@@ -396,8 +396,8 @@ function handleVoiceRelay(data){
 // FILE SHARING — files sent as base64 chunks via both transports
 // Max ~5MB via WebRTC, ~200KB via MQTT relay (chunked)
 // ═══════════════════════════════════════════════════════════════════════════
-const MAX_FILE_RELAY=100*1024; // 100KB raw file limit for MQTT (base64 inflates to ~133KB)
-const MAX_FILE_P2P=5*1024*1024; // 5MB for WebRTC
+const MAX_FILE_RELAY=500*1024; // 500KB raw for MQTT
+const MAX_FILE_P2P=25*1024*1024; // 25MB for WebRTC
 const FILE_ICONS={image:"🖼️",video:"🎬",audio:"🎵",pdf:"📄",zip:"📦",code:"💻",doc:"📝",default:"📎"};
 
 function fileCategory(name,mime){
