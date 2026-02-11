@@ -454,9 +454,10 @@ function handleVoiceRelay(data){
 // ═══════════════════════════════════════════════════════════════════════════
 const MAX_FILE_RELAY=500*1024; // 500KB raw for MQTT
 const MAX_FILE_P2P=25*1024*1024; // 25MB for WebRTC
-const FILE_ICONS={image:"🖼️",video:"🎬",audio:"🎵",pdf:"📄",zip:"📦",code:"💻",doc:"📝",default:"📎"};
+const FILE_ICONS={gif:"🎞️",image:"🖼️",video:"🎬",audio:"🎵",pdf:"📄",zip:"📦",code:"💻",doc:"📝",default:"📎"};
 
 function fileCategory(name,mime){
+  if(mime?.startsWith("image/gif")||name?.toLowerCase().endsWith(".gif"))return"gif";
   if(mime?.startsWith("image/"))return"image";
   if(mime?.startsWith("video/"))return"video";
   if(mime?.startsWith("audio/"))return"audio";
@@ -468,7 +469,7 @@ function fileCategory(name,mime){
   return"default";
 }
 function fileIcon(cat){return FILE_ICONS[cat]||FILE_ICONS.default}
-function fileIconClass(cat){return{image:"img",video:"vid",audio:"aud",pdf:"doc",zip:"gen",code:"doc",doc:"doc",default:"gen"}[cat]||"gen"}
+function fileIconClass(cat){return{gif:"img",image:"img",video:"vid",audio:"aud",pdf:"doc",zip:"gen",code:"doc",doc:"doc",default:"gen"}[cat]||"gen"}
 function fmtSize(b){if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";return(b/1048576).toFixed(1)+" MB"}
 
 // Safe base64 encode for large arrays (avoids stack overflow)
@@ -501,7 +502,7 @@ async function sendFile(file){
       file:{name:file.name,size:file.size,type:file.type,cat,data:b64}
     };
 
-    if(cat==="image"&&file.size<MAX_FILE_P2P){
+    if((cat==="image"||cat==="gif")&&file.size<MAX_FILE_P2P){
       msg.file.isImage=true;
     }
 
@@ -547,6 +548,29 @@ function renderFileMsg(msg){
 }
 
 // ── Text Actions ───────────────────────────────────────────────────────────
+const IMG_URL_RE=/^(https?:\/\/\S+\.(?:gif|png|jpg|jpeg|webp)(?:\?\S*)?)$/i;
+const IMG_URL_INLINE_RE=/(https?:\/\/\S+\.(?:gif|png|jpg|jpeg|webp)(?:\?\S*)?)/gi;
+
+function renderContent(text){
+  if(!text)return"";
+  const escaped=esc(text);
+  // If the entire message is a single image/gif URL, render just the image
+  const singleMatch=text.trim().match(IMG_URL_RE);
+  if(singleMatch){
+    return'<img class="file-img-preview" src="'+esc(singleMatch[1])+'" alt="image" loading="lazy" onerror="this.style.display=\'none\'">';
+  }
+  // Otherwise render URLs as clickable links, and embed any image URLs below
+  let html=escaped.replace(/(https?:\/\/[^\s<]+)/g,'<a href="$1" target="_blank" rel="noopener" style="color:var(--acc);word-break:break-all">$1</a>');
+  // Find any image URLs within the text and append inline previews
+  const imgMatches=[...text.matchAll(IMG_URL_INLINE_RE)];
+  if(imgMatches.length){
+    for(const match of imgMatches){
+      html+='<br><img class="file-img-preview" src="'+esc(match[1])+'" alt="image" loading="lazy" onerror="this.style.display=\'none\'">';
+    }
+  }
+  return html;
+}
+
 function sendMsg(t){if(!t.trim())return;const msg={id:S.me.id+"-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),userId:S.me.id,userName:S.me.name,userColor:S.me.color,userAvatar:S.me.avatar,content:t.trim(),ts:Date.now()};S.messages.push(msg);broadcast({type:"message",msg});qr();scrollBot()}
 let typeTh=0;function sendTyp(){const n=Date.now();if(n-typeTh>2000){typeTh=n;broadcast({type:"typing",userId:S.me.id})}}
 function doReact(mid,emoji){const msg=S.messages.find(m=>m.id===mid);if(!msg)return;if(!msg.reactions)msg.reactions={};if(!msg.reactions[emoji])msg.reactions[emoji]={count:0,users:[]};const r=msg.reactions[emoji],idx=r.users.indexOf(S.me.id);if(idx>=0){r.users.splice(idx,1);r.count--;if(r.count<=0)delete msg.reactions[emoji]}else{r.users.push(S.me.id);r.count++}broadcast({type:"reaction",msgId:mid,emoji,userId:S.me.id});qr()}
@@ -666,7 +690,7 @@ function updateMsgs(){
     let rh="";if(m.reactions&&Object.keys(m.reactions).length){rh='<div class="reactions">';for(const[em,rd]of Object.entries(m.reactions)){rh+='<button class="reaction'+(rd.users.includes(S.me.id)?" mine":"")+'" onclick="doReact(\''+m.id+"','"+em+"'\")>"+em+"<span>"+rd.count+"</span></button>"}rh+="</div>"}
     const acts='<div class="msg-actions"><button class="act-btn" onclick="showEmoji(this,\''+m.id+'\')" title="React">😊</button>'+(own?'<button class="act-btn" onclick="startEdit(\''+m.id+'\')" title="Edit">✏️</button><button class="act-btn" onclick="doDelete(\''+m.id+'\')" title="Delete">🗑️</button>':"")+"</div>";
     const fh=m.file?renderFileMsg(m):"";
-    const bodyContent=m.file?(m.content?esc(m.content):""):esc(m.content);
+    const bodyContent=m.file?(m.content?esc(m.content):""):renderContent(m.content);
     if(compact){html+='<div class="message compact" data-mid="'+m.id+'">'+acts+(bodyContent?'<div class="msg-body" id="b-'+m.id+'">'+bodyContent+(m.edited?' <span style="font-size:10px;color:var(--fnt)">(edited)</span>':"")+"</div>":"")+fh+rh+"</div>"}
     else{html+='<div class="message msg-enter" data-mid="'+m.id+'">'+acts+'<div class="peer-av" style="background:linear-gradient(135deg,'+m.userColor+'30,'+m.userColor+'10);border:2px solid '+m.userColor+'55;color:'+m.userColor+';width:38px;height:38px;min-width:38px;font-size:14px">'+esc(m.userAvatar)+'</div><div style="flex:1;min-width:0"><div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px"><span class="msg-author" style="color:'+m.userColor+'">'+esc(m.userName)+'</span><span class="msg-time">'+fmtTime(m.ts)+"</span>"+(m.edited?'<span style="font-size:10px;color:var(--fnt)">(edited)</span>':"")+"</div>"+(bodyContent?'<div class="msg-body" id="b-'+m.id+'">'+bodyContent+"</div>":"")+fh+rh+"</div></div>"}
     lu=m.userId;lt=m.ts;
