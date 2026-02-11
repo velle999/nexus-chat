@@ -524,7 +524,7 @@ function renderChat(){
     '<button id="voice-join" style="background:none;border:1px solid var(--brd);color:var(--acc);cursor:pointer;padding:8px 16px;border-radius:8px;font-size:13px;font-family:var(--mono);display:flex;align-items:center;gap:6px;margin:0 auto"><span style="font-size:16px">🎙️</span> Join Voice</button>')+
     '</div>';
 
-  return '<div class="sidebar" id="sidebar"><div class="sb-header"><span style="font-size:20px">⚡</span><h2>NEXUS P2P</h2></div><div style="padding:12px 16px"><div class="room-code-box" id="copy-code" title="Click to copy"><div style="flex:1"><div style="font-size:10px;color:var(--mut);font-weight:600;letter-spacing:1px">ROOM CODE</div><div style="font-family:var(--mono);font-size:16px;color:var(--acc);font-weight:700;letter-spacing:2px">'+S.roomCode+'</div></div><span style="font-size:16px;color:var(--mut)">📋</span></div><div style="font-size:11px;color:var(--fnt);text-align:center;margin-top:4px">Share this code to invite others</div></div><div style="padding:0 16px 8px"><div style="height:1px;background:var(--brd)"></div></div><div style="padding:4px 16px 8px;font-size:10px;font-weight:700;letter-spacing:1.5px;color:var(--fnt)" id="sb-count">PEERS — 1</div><div style="flex:1;overflow-y:auto;padding:0 8px" id="sb-peers"></div>'+voiceHtml+'<div class="user-panel"><div class="peer-av" style="background:linear-gradient(135deg,'+S.me.color+'30,'+S.me.color+'10);border:2px solid '+S.me.color+'55;color:'+S.me.color+';width:32px;height:32px;min-width:32px;font-size:12px"><div class="st-dot" style="background:var(--grn)"></div>'+esc(S.me.avatar)+'</div><div style="flex:1"><div style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+S.me.color+'">'+esc(S.me.name)+'</div><div style="font-size:10px;color:var(--fnt)" id="user-mode">Connecting...</div></div></div></div><div class="chat-area"><div class="chat-header"><button class="menu-btn" id="menu-btn" style="background:none;border:none;color:var(--mut);cursor:pointer;padding:4px;display:none">☰</button><span id="mode-badge" class="relay-badge relay">RELAY</span><h3>Room Chat</h3><span style="color:var(--fnt);font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:12px" id="hdr-info">connecting...</span><button id="tog-mem" style="background:none;border:none;color:var(--txt);cursor:pointer;padding:6px;border-radius:6px;display:flex;align-items:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></button><button id="tog-diag" style="background:none;border:none;color:var(--fnt);cursor:pointer;padding:6px;border-radius:6px;font-size:14px;font-family:var(--mono)" title="Diagnostics">🔧</button></div><div class="msg-list" id="msg-list"></div><div class="typing-bar" id="typ-bar"></div><div class="input-area"><div class="input-row"><input type="file" id="file-in" style="display:none" multiple><button class="send-btn" id="attach-btn" title="Attach file" style="background:var(--bg3);color:var(--mut);border-color:var(--brd)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg></button><input id="msg-in" placeholder="Send a message…" autocomplete="off"><button class="send-btn" id="send-btn" title="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button></div></div></div><div class="members-panel" id="mem-panel"><div id="mem-hdr" class="mem-header">ONLINE — 1</div><div id="mem-list"></div></div><div id="diag-panel" style="display:none;position:fixed;bottom:0;right:0;width:420px;max-width:90vw;max-height:50vh;background:var(--bg0);border:1px solid var(--brdL);border-radius:12px 0 0 0;z-index:100;overflow:hidden;box-shadow:0 -4px 24px rgba(0,0,0,.5)"><div style="padding:10px 14px;border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:8px"><span style="font-size:14px">🔧</span><span style="font-size:12px;font-weight:700;color:var(--acc);font-family:var(--mono);flex:1">DIAGNOSTICS</span><button id="diag-close" style="background:none;border:none;color:var(--mut);cursor:pointer;font-size:16px">✕</button></div><div id="diag-log" style="padding:8px 12px;overflow-y:auto;max-height:calc(50vh - 40px);font-family:var(--mono);font-size:11px;line-height:1.8"></div></div>'}
+  return '<div class="sidebar" id="sidebar"><div class="sb-header"><span style="font-size:20px">⚡</span><h2>NEXUS P2P</h2></div><div style="padding:12px 16px"><div class="room-code-box" id="copy-code" title="Click to copy"><div style="flex:1"><div style="font-size:10px;color:var(--mut);font-weight:600;letter-spacing:1px">ROOM CODE</div><div style="font-family:var(--mono);font-size:16px;color:var(--acc);font-weight:700;letter-spacing:2px">'+S.roomCode+'</div></div><span style="font-size:16px;color:var(--mut)">📋</span></div><div style="font-size:11px;color:var(--fnt);text-align:center;margin-top:4px">Share this code to invite others</div></div><div style="padding:0 16px 8px"><div style="height:1px;background:var(--brd)"></div></div><div style="padding:4px 16px 8px;font-size:10px;font-weight:700;letter-spacing:1.5px;color:var(--fnt)" id="sb-count">PEERS — 1</div><div style="flex:1;overflow-y:auto;padding:0 8px" id="sb-peers"></div>'+voiceHtml+'<div class="user-panel"><div class="peer-av" style="background:linear-gradient(135deg,'+S.me.color+'30,'+S.me.color+'10);border:2px solid '+S.me.color+'55;color:'+S.me.color+';width:32px;height:32px;min-width:32px;font-size:12px"><div class="st-dot" style="background:var(--grn)"></div>'+esc(S.me.avatar)+'</div><div style="flex:1"><div style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+S.me.color+'">'+esc(S.me.name)+'</div><div style="font-size:10px;color:var(--fnt)" id="user-mode">Connecting...</div></div></div></div><div class="chat-area"><div class="chat-header"><button class="menu-btn" id="menu-btn" style="background:none;border:none;color:var(--mut);cursor:pointer;padding:4px;display:none">☰</button><span id="mode-badge" class="relay-badge relay">RELAY</span><h3>Room Chat</h3><span style="color:var(--fnt);font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:12px" id="hdr-info">connecting...</span><button id="tog-mem" style="background:none;border:none;color:var(--txt);cursor:pointer;padding:6px;border-radius:6px;display:flex;align-items:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></button><button id="tog-diag" style="background:none;border:none;color:var(--fnt);cursor:pointer;padding:6px;border-radius:6px;font-size:14px;font-family:var(--mono)" title="Diagnostics">🔧</button></div><div class="msg-list" id="msg-list"></div><div class="typing-bar" id="typ-bar"></div><div id="mobile-voice" style="display:none"></div><div class="input-area"><div class="input-row"><input type="file" id="file-in" style="display:none" multiple><button id="attach-btn" title="Attach file" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--acc);font-size:14px;display:flex;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg></button><input id="msg-in" placeholder="Send a message…" autocomplete="off"><button id="mobile-mic-btn" title="Voice chat" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--mut);font-size:14px;display:none;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button><button class="send-btn" id="send-btn" title="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button></div></div></div><div class="members-panel" id="mem-panel"><div id="mem-hdr" class="mem-header">ONLINE — 1</div><div id="mem-list"></div></div><div id="diag-panel" style="display:none;position:fixed;bottom:0;right:0;width:420px;max-width:90vw;max-height:50vh;background:var(--bg0);border:1px solid var(--brdL);border-radius:12px 0 0 0;z-index:100;overflow:hidden;box-shadow:0 -4px 24px rgba(0,0,0,.5)"><div style="padding:10px 14px;border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:8px"><span style="font-size:14px">🔧</span><span style="font-size:12px;font-weight:700;color:var(--acc);font-family:var(--mono);flex:1">DIAGNOSTICS</span><button id="diag-close" style="background:none;border:none;color:var(--mut);cursor:pointer;font-size:16px">✕</button></div><div id="diag-log" style="padding:8px 12px;overflow-y:auto;max-height:calc(50vh - 40px);font-family:var(--mono);font-size:11px;line-height:1.8"></div></div>'}
 
 function bindChat(){
   const inp=document.getElementById("msg-in");inp?.focus();
@@ -546,7 +546,12 @@ function bindChat(){
   }
   // Paste files
   document.addEventListener("paste",e=>{if(e.clipboardData?.files?.length){e.preventDefault();for(const f of e.clipboardData.files)sendFile(f)}});
-  if(window.innerWidth<=600){const m=document.getElementById("menu-btn");if(m)m.style.display="flex"}
+  if(window.innerWidth<=600){const m=document.getElementById("menu-btn");if(m)m.style.display="flex";const mb=document.getElementById("mobile-mic-btn");if(mb)mb.style.display="flex"}
+  // Mobile mic button — join or show PTT
+  document.getElementById("mobile-mic-btn")?.addEventListener("click",()=>{
+    if(!S.voice.joined){voiceJoin();updateMobileVoice()}
+    else{voiceLeave();updateMobileVoice()}
+  });
   bindVoice();
   updateMsgs();updatePeers();updateMode();
 }
@@ -605,20 +610,45 @@ function updateMode(){
   if(um)um.textContent=S.mode==="p2p"?"Direct P2P":S.mode==="relay"?"Relay mode":"Connecting...";
 }
 function updateVoiceBar(){
-  // Re-render voice bar only when state changes require full rebind
   const vb=document.getElementById("voice-bar");
   if(!vb)return;
-  // Update speakers indicator
   if(S.voice.joined){
-    const spkEl=vb.querySelector(".speaker-icon")?.parentElement;
-    const spkHtml=S.voice.speakers.size?[...S.voice.speakers.values()].map(s=>'<span class="speaker-icon">🔊 '+esc(s.name)+'</span>').join(" "):"";
-    // Just update the status text and speakers without full re-render
     const statusEl=vb.querySelector(".voice-status");
     if(statusEl){
       statusEl.className="voice-status"+(S.voice.transmitting?" tx":"");
       statusEl.innerHTML=S.voice.transmitting?"🔴 Transmitting...":"Hold 🎤 or Space to talk";
     }
   }
+  updateMobileVoice();
+}
+
+function updateMobileVoice(){
+  const mv=document.getElementById("mobile-voice");
+  const mb=document.getElementById("mobile-mic-btn");
+  if(!mv)return;
+  if(!S.voice.joined){
+    mv.style.display="none";
+    if(mb)mb.style.color="var(--mut)";
+    return;
+  }
+  if(mb)mb.style.color="var(--grn)";
+  mv.style.display="flex";
+  mv.style.cssText="display:flex;align-items:center;gap:8px;padding:6px 16px;background:var(--bg3);border-top:1px solid var(--brd)";
+  const spkHtml=S.voice.speakers.size?[...S.voice.speakers.values()].map(s=>'<span class="speaker-icon">🔊 '+esc(s.name)+'</span>').join(" "):"";
+  mv.innerHTML='<button class="ptt-btn'+(S.voice.transmitting?" active":"")+'" id="mobile-ptt" style="width:40px;height:40px;font-size:16px">🎤</button><div style="flex:1;min-width:0"><div class="voice-status'+(S.voice.transmitting?" tx":"")+'">'+
+    (S.voice.transmitting?"🔴 Transmitting...":"Hold to talk")+
+    '</div>'+spkHtml+'</div><button id="mobile-voice-leave" style="background:none;border:none;color:var(--red);cursor:pointer;font-size:11px;font-family:var(--mono);padding:4px 8px">✕</button>';
+  // Bind mobile PTT
+  const ptt=document.getElementById("mobile-ptt");
+  if(ptt){
+    ptt.addEventListener("mousedown",e=>{e.preventDefault();voiceStartTx()});
+    ptt.addEventListener("mouseup",voiceStopTx);
+    ptt.addEventListener("mouseleave",voiceStopTx);
+    ptt.addEventListener("touchstart",e=>{e.preventDefault();voiceStartTx()},{passive:false});
+    ptt.addEventListener("touchend",voiceStopTx);
+    ptt.addEventListener("touchcancel",voiceStopTx);
+  }
+  document.getElementById("mobile-voice-leave")?.addEventListener("click",()=>{voiceLeave();updateMobileVoice()});
 }
 
 // ── Global handlers ────────────────────────────────────────────────────────
