@@ -102,20 +102,21 @@ const S={screen:"connect",me:null,roomCode:"",peer:null,conns:new Map(),knownUse
 let renderQ=false,currentScreen=null;
 function qr(){if(!renderQ){renderQ=true;requestAnimationFrame(doRender)}}
 
-function safeSend(c,d){try{if(c?.open){c.send(JSON.stringify(d));return true}}catch(e){}return false}
+function safeSend(c,d){try{if(c?.open){c.send(d);return true}}catch(e){console.warn("send fail",e)}return false}
 function broadcast(d){S.conns.forEach(({conn})=>safeSend(conn,d))}
 function getPeers(){const r=[];S.conns.forEach(({user},id)=>{if(user)r.push({...user,peerId:id})});return r}
 
 function setup(conn,isInit){
   const pid=conn.peer;
-  if(S.conns.has(pid)){const ex=S.conns.get(pid);if(ex.conn?.open){conn.close();return}S.conns.delete(pid)}
+  console.log("[NEXUS] setup connection to",pid,"initiator:",isInit);
+  if(S.conns.has(pid)){const ex=S.conns.get(pid);if(ex.conn?.open){console.log("[NEXUS] already connected to",pid);conn.close();return}S.conns.delete(pid)}
   const e={conn,user:null,ready:false,helloed:false};S.conns.set(pid,e);
-  conn.on("open",()=>{e.ready=true;if(isInit){safeSend(conn,{type:"hello",user:S.me});e.helloed=true}qr()});
-  conn.on("data",raw=>{let d;try{d=typeof raw==="string"?JSON.parse(raw):raw}catch{return}onMsg(pid,d)});
-  conn.on("close",()=>{const u=S.conns.get(pid)?.user;S.conns.delete(pid);S.knownUsers.delete(pid);if(S.typing.has(pid)){clearTimeout(S.typing.get(pid));S.typing.delete(pid)}if(u)sysMsg(u.name+" left");qr()});
-  conn.on("error",()=>{S.conns.delete(pid);S.knownUsers.delete(pid);qr()});
+  conn.on("open",()=>{console.log("[NEXUS] conn open with",pid);e.ready=true;if(isInit){safeSend(conn,{type:"hello",user:S.me});e.helloed=true}qr()});
+  conn.on("data",raw=>{let d;try{d=typeof raw==="string"?JSON.parse(raw):(raw&&typeof raw==="object"?raw:JSON.parse(String(raw)))}catch(e){console.warn("[NEXUS] parse fail",e,typeof raw,raw);return}console.log("[NEXUS] recv from",pid,d.type);onMsg(pid,d)});
+  conn.on("close",()=>{console.log("[NEXUS] conn closed",pid);const u=S.conns.get(pid)?.user;S.conns.delete(pid);S.knownUsers.delete(pid);if(S.typing.has(pid)){clearTimeout(S.typing.get(pid));S.typing.delete(pid)}if(u)sysMsg(u.name+" left");qr()});
+  conn.on("error",err=>{console.warn("[NEXUS] conn error",pid,err);S.conns.delete(pid);S.knownUsers.delete(pid);qr()});
 }
-function connectTo(pid){if(S.conns.has(pid)||pid===S.peer?.id)return;setup(S.peer.connect(pid,{reliable:true,serialization:"none"}),true)}
+function connectTo(pid){if(S.conns.has(pid)||pid===S.peer?.id)return;const c=S.peer.connect(pid,{reliable:true});setup(c,true)}
 
 function onMsg(from,data){switch(data.type){
   case"hello":{const e=S.conns.get(from);if(!e)break;e.user=data.user;S.knownUsers.set(from,data.user);
@@ -141,7 +142,7 @@ function copyCode(){navigator.clipboard?.writeText(S.roomCode).then(()=>{S.copyT
 function scrollBot(){setTimeout(()=>{const el=document.getElementById("msg-list");if(el)el.scrollTop=el.scrollHeight},30)}
 
 function doCreate(name,color){const room=genCode(),myId="nexus-"+room+"-host";S.me={id:myId,name,color,avatar:name[0].toUpperCase()};S.roomCode=room;const peer=new Peer(myId,{debug:0});S.peer=peer;peer.on("open",()=>{S.connected=true;S.screen="chat";S.peerError=null;sysMsg("Room created! Share code: "+room);qr()});peer.on("connection",c=>setup(c,false));peer.on("error",e=>{S.peerError=e.type==="unavailable-id"?"Code in use.":"Error: "+e.type;qr()});peer.on("disconnected",()=>{setTimeout(()=>{if(!peer.destroyed)peer.reconnect()},2000)})}
-function doJoin(name,color,code){code=code.toUpperCase().replace(/[^A-Z0-9]/g,"");if(code.length<4)return;const myId="nexus-"+code+"-"+Date.now().toString(36);S.me={id:myId,name,color,avatar:name[0].toUpperCase()};S.roomCode=code;const peer=new Peer(myId,{debug:0});S.peer=peer;peer.on("open",()=>{S.connected=true;S.screen="chat";S.peerError=null;qr();setTimeout(()=>connectTo("nexus-"+code+"-host"),300)});peer.on("connection",c=>setup(c,false));peer.on("error",e=>{S.peerError=e.type==="peer-unavailable"?"Room not found.":"Error: "+e.type;qr()});peer.on("disconnected",()=>{setTimeout(()=>{if(!peer.destroyed)peer.reconnect()},2000)})}
+function doJoin(name,color,code){code=code.toUpperCase().replace(/[^A-Z0-9]/g,"");if(code.length<4)return;const myId="nexus-"+code+"-"+Date.now().toString(36);S.me={id:myId,name,color,avatar:name[0].toUpperCase()};S.roomCode=code;const peer=new Peer(myId,{debug:0});S.peer=peer;let retries=0;const maxRetries=5;const hostId="nexus-"+code+"-host";function tryConnect(){if(retries>=maxRetries){sysMsg("Could not find room host after "+maxRetries+" attempts. Check the code and try again.");return}retries++;console.log("Connecting to host, attempt "+retries);connectTo(hostId)}peer.on("open",()=>{S.connected=true;S.screen="chat";S.peerError=null;qr();setTimeout(tryConnect,300)});peer.on("connection",c=>setup(c,false));peer.on("error",e=>{console.warn("Peer error:",e.type,e);if(e.type==="peer-unavailable"&&S.screen==="chat"&&retries<maxRetries){const delay=1000*retries;sysMsg("Connecting to room... (attempt "+(retries+1)+")");setTimeout(tryConnect,delay)}else if(S.screen==="connect"){S.peerError=e.type==="peer-unavailable"?"Room not found. Check the code.":"Error: "+e.type;qr()}});peer.on("disconnected",()=>{setTimeout(()=>{if(!peer.destroyed)peer.reconnect()},2000)})}
 
 function doRender(){renderQ=false;if(S.screen==="connect"&&currentScreen!=="connect"){document.getElementById("app").innerHTML=renderConnect();bindConnect();currentScreen="connect"}else if(S.screen==="chat"){if(currentScreen!=="chat"){document.getElementById("app").innerHTML=renderChat();bindChat();currentScreen="chat";scrollBot()}else{updateMsgs();updatePeers();updateTypBar();updateToast()}}}
 
