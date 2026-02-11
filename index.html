@@ -100,16 +100,19 @@ function esc(s){if(!s)return"";const d=document.createElement("div");d.textConte
 
 const S={screen:"connect",me:null,roomCode:"",peer:null,conns:new Map(),knownUsers:new Map(),messages:[],typing:new Map(),connected:false,showMembers:true,mobileSidebar:false,copyToast:false,peerError:null};
 
-// ICE servers: STUN for direct connections, TURN for relay when behind VPNs/strict NAT
-const ICE_SERVERS=[
+// ICE: STUN for direct, TURN for relay behind VPN/strict NAT
+// freestun.net provides free open TURN; we also dynamically fetch Cloudflare creds
+let ICE_SERVERS=[
   {urls:"stun:stun.l.google.com:19302"},
   {urls:"stun:stun1.l.google.com:19302"},
-  {urls:"stun:stun.relay.metered.ca:80"},
-  {urls:"turn:openrelay.metered.ca:80",username:"openrelayproject",credential:"openrelayproject"},
-  {urls:"turn:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"},
-  {urls:"turn:openrelay.metered.ca:443?transport=tcp",username:"openrelayproject",credential:"openrelayproject"},
-  {urls:"turns:openrelay.metered.ca:443",username:"openrelayproject",credential:"openrelayproject"}
+  {urls:"stun:stun.cloudflare.com:3478"},
+  {urls:"stun:freestun.net:3478"},
+  {urls:"turn:freestun.net:3478",username:"free",credential:"free"},
+  {urls:"turn:freestun.net:5349",username:"free",credential:"free"},
+  {urls:"turns:freestun.net:5349",username:"free",credential:"free"}
 ];
+// Fetch Cloudflare speed-test TURN creds (ephemeral, global edge network)
+(async()=>{try{const r=await fetch("https://speed.cloudflare.com/turn-creds");if(!r.ok)return;const d=await r.json();if(d.username&&d.credential){console.log("[NEXUS] Got Cloudflare TURN creds");ICE_SERVERS=[...ICE_SERVERS,{urls:"turn:turn.speed.cloudflare.com:50000",username:d.username,credential:d.credential},{urls:"turn:turn.speed.cloudflare.com:50000?transport=tcp",username:d.username,credential:d.credential},{urls:"turns:turn.speed.cloudflare.com:443?transport=tcp",username:d.username,credential:d.credential}]}}catch(e){console.warn("[NEXUS] CF TURN fetch failed (ok):",e)}})();
 let renderQ=false,currentScreen=null;
 function qr(){if(!renderQ){renderQ=true;requestAnimationFrame(doRender)}}
 
