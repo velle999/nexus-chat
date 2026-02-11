@@ -305,41 +305,34 @@ function voiceStartTx(){
   if(!S.voice.joined||S.voice.transmitting)return;
   S.voice.transmitting=true;
   S.voice.micStream.getAudioTracks().forEach(t=>t.enabled=true);
-  // Start recording chunks
+  // Collect all chunks during PTT hold, send complete audio on release
+  S.voice.chunks=[];
   try{
-    const mr=new MediaRecorder(S.voice.micStream,{mimeType:"audio/webm;codecs=opus",bitsPerSecond:16000});
+    const opts=MediaRecorder.isTypeSupported("audio/webm;codecs=opus")?{mimeType:"audio/webm;codecs=opus",bitsPerSecond:24000}:{bitsPerSecond:24000};
+    const mr=new MediaRecorder(S.voice.micStream,opts);
     S.voice.recorder=mr;
-    mr.ondataavailable=async(ev)=>{
-      if(ev.data.size>0&&S.voice.transmitting){
-        const buf=await ev.data.arrayBuffer();
-        const b64=btoa(String.fromCharCode(...new Uint8Array(buf)));
-        const pkt={type:"voice",userId:S.me.id,userName:S.me.name,audio:b64,ts:Date.now()};
-        // Send via both channels
-        if(S.mode==="p2p"){S.conns.forEach(({conn})=>safeSend(conn,pkt))}
-        mqttSendVoice(pkt);
-      }
+    mr.ondataavailable=(ev)=>{if(ev.data.size>0)S.voice.chunks.push(ev.data)};
+    mr.onstop=async()=>{
+      if(S.voice.chunks.length===0)return;
+      const blob=new Blob(S.voice.chunks,{type:mr.mimeType||"audio/webm;codecs=opus"});
+      S.voice.chunks=[];
+      // Only send if reasonable size (< 500KB for a PTT clip)
+      if(blob.size>500000){dlog("Voice clip too large: "+Math.round(blob.size/1024)+"KB",false);return}
+      const buf=await blob.arrayBuffer();
+      const bytes=new Uint8Array(buf);
+      // Safe base64 encode (chunked to avoid stack overflow)
+      let b64="";const CHUNK=8192;
+      for(let i=0;i<bytes.length;i+=CHUNK){b64+=String.fromCharCode.apply(null,bytes.subarray(i,i+CHUNK))}
+      b64=btoa(b64);
+      const pkt={type:"voice",userId:S.me.id,userName:S.me.name,audio:b64,mime:mr.mimeType||"audio/webm",ts:Date.now()};
+      if(S.mode==="p2p"){S.conns.forEach(({conn})=>safeSend(conn,pkt))}
+      mqttSendVoice(pkt);
     };
-    mr.start(200); // 200ms chunks
-  }catch(e){
-    // Fallback: try without codec spec
-    try{
-      const mr=new MediaRecorder(S.voice.micStream,{bitsPerSecond:16000});
-      S.voice.recorder=mr;
-      mr.ondataavailable=async(ev)=>{
-        if(ev.data.size>0&&S.voice.transmitting){
-          const buf=await ev.data.arrayBuffer();
-          const b64=btoa(String.fromCharCode(...new Uint8Array(buf)));
-          const pkt={type:"voice",userId:S.me.id,userName:S.me.name,audio:b64,ts:Date.now()};
-          if(S.mode==="p2p"){S.conns.forEach(({conn})=>safeSend(conn,pkt))}
-          mqttSendVoice(pkt);
-        }
-      };
-      mr.start(200);
-    }catch(e2){dlog("Voice: recorder fail - "+e2.message,false)}
-  }
-  // Start viz animation
+    mr.start(100); // Collect in 100ms chunks, but send all together on stop
+  }catch(e){dlog("Voice: recorder fail - "+e.message,false)}
+  // Viz animation
   function vizLoop(){
-    if(!S.voice.transmitting){return}
+    if(!S.voice.transmitting)return;
     if(S.voice.analyser){
       const data=new Uint8Array(S.voice.analyser.frequencyBinCount);
       S.voice.analyser.getByteFrequencyData(data);
@@ -357,6 +350,7 @@ function voiceStopTx(){
   if(!S.voice.transmitting)return;
   S.voice.transmitting=false;
   S.voice.micStream?.getAudioTracks().forEach(t=>t.enabled=false);
+  // Stop recorder — this triggers onstop which sends the complete clip
   if(S.voice.recorder&&S.voice.recorder.state!=="inactive"){try{S.voice.recorder.stop()}catch(e){}}
   S.voice.recorder=null;
   cancelAnimationFrame(vizFrame);
@@ -369,30 +363,28 @@ function voiceStopTx(){
 // Receive and play voice data
 function handleVoiceRelay(data){
   if(!S.voice.joined||!data.audio||data.userId===S.me?.id)return;
-  // Show speaker indicator
   S.voice.speakers.set(data.userId,{name:data.userName,ts:Date.now()});
-  setTimeout(()=>{if(Date.now()-S.voice.speakers.get(data.userId)?.ts>=800)S.voice.speakers.delete(data.userId);qr()},1000);
   qr();
-  // Decode and play
+  // Decode complete audio clip and play
   try{
-    const binary=atob(data.audio);
-    const bytes=new Uint8Array(binary.length);
-    for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
-    const blob=new Blob([bytes],{type:"audio/webm;codecs=opus"});
+    const raw=atob(data.audio);
+    const bytes=new Uint8Array(raw.length);
+    for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
+    const blob=new Blob([bytes],{type:data.mime||"audio/webm;codecs=opus"});
     const url=URL.createObjectURL(blob);
     const audio=new Audio(url);
     audio.volume=1.0;
-    audio.onended=()=>URL.revokeObjectURL(url);
-    audio.onerror=()=>URL.revokeObjectURL(url);
-    audio.play().catch(()=>{});
-  }catch(e){}
+    audio.onended=()=>{URL.revokeObjectURL(url);S.voice.speakers.delete(data.userId);qr()};
+    audio.onerror=()=>{URL.revokeObjectURL(url);S.voice.speakers.delete(data.userId)};
+    audio.play().catch(e=>{dlog("Voice playback fail: "+e.message,false)});
+  }catch(e){dlog("Voice decode fail: "+e.message,false)}
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 // FILE SHARING — files sent as base64 chunks via both transports
 // Max ~5MB via WebRTC, ~200KB via MQTT relay (chunked)
 // ═══════════════════════════════════════════════════════════════════════════
-const MAX_FILE_RELAY=200*1024; // 200KB base64 limit for MQTT
+const MAX_FILE_RELAY=100*1024; // 100KB raw file limit for MQTT (base64 inflates to ~133KB)
 const MAX_FILE_P2P=5*1024*1024; // 5MB for WebRTC
 const FILE_ICONS={image:"🖼️",video:"🎬",audio:"🎵",pdf:"📄",zip:"📦",code:"💻",doc:"📝",default:"📎"};
 
@@ -411,15 +403,18 @@ function fileIcon(cat){return FILE_ICONS[cat]||FILE_ICONS.default}
 function fileIconClass(cat){return{image:"img",video:"vid",audio:"aud",pdf:"doc",zip:"gen",code:"doc",doc:"doc",default:"gen"}[cat]||"gen"}
 function fmtSize(b){if(b<1024)return b+" B";if(b<1048576)return(b/1024).toFixed(1)+" KB";return(b/1048576).toFixed(1)+" MB"}
 
+// Safe base64 encode for large arrays (avoids stack overflow)
+function toBase64(uint8){let b="";const C=8192;for(let i=0;i<uint8.length;i+=C){b+=String.fromCharCode.apply(null,uint8.subarray(i,i+C))}return btoa(b)}
+
 async function sendFile(file){
   const maxSize=S.mode==="p2p"?MAX_FILE_P2P:MAX_FILE_RELAY;
   if(file.size>maxSize){
-    sysMsg("File too large ("+ fmtSize(file.size)+"). Max: "+fmtSize(maxSize)+" in "+(S.mode==="p2p"?"P2P":"relay")+" mode.");
+    sysMsg("File too large ("+fmtSize(file.size)+"). Max "+fmtSize(maxSize)+" in "+(S.mode==="p2p"?"P2P":"relay")+" mode.");
     return;
   }
   const cat=fileCategory(file.name,file.type);
   const buf=await file.arrayBuffer();
-  const b64=btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const b64=toBase64(new Uint8Array(buf));
 
   const msg={
     id:S.me.id+"-"+Date.now()+"-"+Math.random().toString(36).slice(2,6),
@@ -442,16 +437,16 @@ function downloadFile(msgId){
   const msg=S.messages.find(m=>m.id===msgId);
   if(!msg?.file?.data)return;
   try{
-    const binary=atob(msg.file.data);
-    const bytes=new Uint8Array(binary.length);
-    for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+    const raw=atob(msg.file.data);
+    const bytes=new Uint8Array(raw.length);
+    for(let i=0;i<raw.length;i++)bytes[i]=raw.charCodeAt(i);
     const blob=new Blob([bytes],{type:msg.file.type||"application/octet-stream"});
     const url=URL.createObjectURL(blob);
     const a=document.createElement("a");
     a.href=url;a.download=msg.file.name||"file";
     document.body.appendChild(a);a.click();
-    setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(url)},100);
-  }catch(e){dlog("File download error: "+e.message,false)}
+    setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(url)},200);
+  }catch(e){dlog("Download error: "+e.message,false)}
 }
 
 function renderFileMsg(msg){
