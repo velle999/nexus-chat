@@ -1,0 +1,8 @@
+/node_modules
+/dist/win-unpacked/locales
+/dist
+main.js
+package-lock.json
+package.json
+preload.js
+nexus-chat.zip
