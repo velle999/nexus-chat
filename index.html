@@ -150,7 +150,9 @@ const S={screen:"connect",me:null,roomCode:"",peer:null,mqtt:null,
   voice:{joined:false,transmitting:false,micStream:null,recorder:null,
     audioCtx:null,speakers:new Map(),vizBars:[0,0,0,0,0,0,0,0]},
   // Encryption
-  cryptoKey:null
+  cryptoKey:null,
+  // Persistence
+  persist:false
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -308,6 +310,85 @@ function handleRelayMsg(data){
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// PERSISTENT ROOMS — IndexedDB storage, rooms last 10 days while active
+// ═══════════════════════════════════════════════════════════════════════════
+const IDB_NAME="nexus-p2p",IDB_VER=1,PERSIST_DAYS=10;
+let idb=null;
+
+function openIDB(){
+  return new Promise((resolve,reject)=>{
+    const req=indexedDB.open(IDB_NAME,IDB_VER);
+    req.onupgradeneeded=(e)=>{
+      const db=e.target.result;
+      if(!db.objectStoreNames.contains("rooms")){db.createObjectStore("rooms",{keyPath:"code"})}
+      if(!db.objectStoreNames.contains("messages")){const ms=db.createObjectStore("messages",{keyPath:"id"});ms.createIndex("room","room")}
+    };
+    req.onsuccess=()=>{idb=req.result;resolve(idb)};
+    req.onerror=()=>reject(req.error);
+  });
+}
+
+async function persistSave(){
+  if(!S.persist||!idb||!S.roomCode)return;
+  try{
+    const tx=idb.transaction(["rooms","messages"],"readwrite");
+    // Update room activity
+    tx.objectStore("rooms").put({code:S.roomCode,lastActive:Date.now()});
+    // Save all non-system messages
+    const ms=tx.objectStore("messages");
+    for(const m of S.messages){
+      if(!m.system)ms.put({id:m.id,room:S.roomCode,...m});
+    }
+  }catch(e){dlog("Persist save error: "+e.message,false)}
+}
+
+async function persistLoad(roomCode){
+  if(!idb)return[];
+  try{
+    return new Promise((resolve)=>{
+      const tx=idb.transaction("messages","readonly");
+      const idx=tx.objectStore("messages").index("room");
+      const req=idx.getAll(roomCode);
+      req.onsuccess=()=>{
+        const msgs=(req.result||[]).map(r=>{const{room,...msg}=r;return msg}).sort((a,b)=>a.ts-b.ts);
+        resolve(msgs);
+      };
+      req.onerror=()=>resolve([]);
+    });
+  }catch(e){return[]}
+}
+
+async function persistDeleteMsg(msgId){
+  if(!S.persist||!idb)return;
+  try{idb.transaction("messages","readwrite").objectStore("messages").delete(msgId)}catch(e){}
+}
+
+async function persistCleanExpired(){
+  if(!idb)return;
+  try{
+    const cutoff=Date.now()-PERSIST_DAYS*86400000;
+    const tx=idb.transaction(["rooms","messages"],"readwrite");
+    const rooms=tx.objectStore("rooms");
+    const msgs=tx.objectStore("messages");
+    const req=rooms.getAll();
+    req.onsuccess=()=>{
+      for(const r of req.result||[]){
+        if(r.lastActive<cutoff){
+          rooms.delete(r.code);
+          // Delete all messages for this room
+          const idx=msgs.index("room");
+          const mreq=idx.getAllKeys(r.code);
+          mreq.onsuccess=()=>{for(const k of mreq.result||[])msgs.delete(k)};
+        }
+      }
+    };
+  }catch(e){}
+}
+
+// Auto-save every 5 seconds when persist is on
+setInterval(()=>{if(S.persist&&S.screen==="chat")persistSave()},5000);
+
+// ═══════════════════════════════════════════════════════════════════════════
 // UNIFIED SEND
 // ═══════════════════════════════════════════════════════════════════════════
 async function safeSend(c,d){try{if(c?.open){const enc=await e2eEncrypt(d);c.send(JSON.stringify(enc));return true}}catch(e){dlog("Send error: "+e.message,false)}return false}
@@ -319,7 +400,6 @@ async function broadcast(data){
     const tooBigForRTC=json.length>16000000;
     if(!tooBigForRTC){S.conns.forEach(({conn})=>{try{if(conn?.open)conn.send(json)}catch(e){}})}
     if(S.mqttReady){
-      // For MQTT, strip file data if too large for broker — encrypt the lite version
       const plainJson=JSON.stringify(data);
       if(plainJson.length>600000&&data.type==="message"&&data.msg?.file?.data){
         const lite={...data,msg:{...data.msg,file:{...data.msg.file,data:null,stripped:true}}};
@@ -696,7 +776,7 @@ function sendMsg(t){if(!t.trim())return;const msg={id:S.me.id+"-"+Date.now()+"-"
 let typeTh=0;function sendTyp(){const n=Date.now();if(n-typeTh>2000){typeTh=n;broadcast({type:"typing",userId:S.me.id})}}
 function doReact(mid,emoji){const msg=S.messages.find(m=>m.id===mid);if(!msg)return;if(!msg.reactions)msg.reactions={};if(!msg.reactions[emoji])msg.reactions[emoji]={count:0,users:[]};const r=msg.reactions[emoji],idx=r.users.indexOf(S.me.id);if(idx>=0){r.users.splice(idx,1);r.count--;if(r.count<=0)delete msg.reactions[emoji]}else{r.users.push(S.me.id);r.count++}broadcast({type:"reaction",msgId:mid,emoji,userId:S.me.id});qr()}
 function doEdit(mid,t){const msg=S.messages.find(m=>m.id===mid);if(msg&&msg.userId===S.me.id&&t.trim()){msg.content=t.trim();msg.edited=true;broadcast({type:"edit",msgId:mid,content:msg.content});qr()}}
-function doDelete(mid){const msg=S.messages.find(m=>m.id===mid);if(msg&&msg.userId===S.me.id){S.messages=S.messages.filter(m=>m.id!==mid);broadcast({type:"delete",msgId:mid});qr()}}
+function doDelete(mid){const msg=S.messages.find(m=>m.id===mid);if(msg&&msg.userId===S.me.id){S.messages=S.messages.filter(m=>m.id!==mid);broadcast({type:"delete",msgId:mid});persistDeleteMsg(mid);qr()}}
 function sysMsg(t){S.messages.push({id:"sys-"+Date.now()+Math.random().toString(36).slice(2,6),system:true,content:t,ts:Date.now()});qr();scrollBot()}
 function copyCode(){navigator.clipboard?.writeText(S.roomCode).then(()=>{S.copyToast=true;qr();setTimeout(()=>{S.copyToast=false;qr()},2000)})}
 function scrollBot(){setTimeout(()=>{const el=document.getElementById("msg-list");if(el)el.scrollTop=el.scrollHeight},30)}
@@ -708,7 +788,7 @@ async function doCreate(name,color){
   S.cryptoKey=await deriveRoomKey(room);
   dlog("Creating room "+room+"...");startMqtt(room);
   const peer=new Peer(myId,{debug:1,config:{iceServers:ICE_SERVERS}});S.peer=peer;
-  peer.on("open",()=>{dlog("PeerJS signaling OK",true);S.connected=true;S.screen="chat";S.peerError=null;sysMsg("Room created! Share code: "+room);sysMsg("🔒 End-to-end encrypted");qr()});
+  peer.on("open",()=>{dlog("PeerJS signaling OK",true);S.connected=true;S.screen="chat";S.peerError=null;sysMsg("Room created! Share code: "+room);sysMsg("🔒 End-to-end encrypted");if(S.persist){sysMsg("💾 Persistent room — history saved locally");persistLoad(room).then(msgs=>{if(msgs.length){const have=new Set(S.messages.map(m=>m.id));const nu=msgs.filter(m=>!have.has(m.id));if(nu.length){S.messages.push(...nu);S.messages.sort((a,b)=>a.ts-b.ts);sysMsg("💾 Loaded "+nu.length+" saved messages");qr();scrollBot()}}})}qr()});
   peer.on("connection",c=>{dlog("Incoming WebRTC",true);setup(c,false)});
   peer.on("error",e=>{dlog("PeerJS: "+e.type,false);S.peerError=e.type==="unavailable-id"?"Code in use.":"Error: "+e.type;qr()});
   peer.on("disconnected",()=>{setTimeout(()=>{if(!peer.destroyed)peer.reconnect()},2000)});
@@ -727,6 +807,18 @@ async function doJoin(name,color,code){
   peer.on("connection",c=>setup(c,false));
   peer.on("error",e=>{dlog("PeerJS: "+e.type,false);if(e.type==="peer-unavailable"&&S.screen==="chat"&&retries<maxR)setTimeout(tryConn,1500*retries);else if(S.screen==="connect"){S.peerError=e.type==="peer-unavailable"?"Room not found.":"Error: "+e.type;qr()}});
   peer.on("disconnected",()=>{setTimeout(()=>{if(!peer.destroyed)peer.reconnect()},2000)});
+  // Load persistent history if enabled
+  if(S.persist){
+    persistLoad(code).then(msgs=>{
+      if(msgs.length){
+        const have=new Set(S.messages.map(m=>m.id));
+        const nu=msgs.filter(m=>!have.has(m.id));
+        if(nu.length){S.messages.push(...nu);S.messages.sort((a,b)=>a.ts-b.ts);qr();scrollBot()}
+        dlog("Loaded "+msgs.length+" messages from local storage",true);
+        sysMsg("💾 Loaded "+msgs.length+" saved messages");
+      }
+    });
+  }
 }
 window.addEventListener("beforeunload",()=>{if(S.mqtt&&S.mqttReady)mqttSend({type:"leave",userId:S.me?.id,userName:S.me?.name})});
 
@@ -735,8 +827,13 @@ window.addEventListener("beforeunload",()=>{if(S.mqtt&&S.mqttReady)mqttSend({typ
 // ═══════════════════════════════════════════════════════════════════════════
 function doRender(){renderQ=false;if(S.screen==="connect"&&currentScreen!=="connect"){document.getElementById("app").innerHTML=renderConnect();bindConnect();currentScreen="connect"}else if(S.screen==="chat"){if(currentScreen!=="chat"){document.getElementById("app").innerHTML=renderChat();bindChat();currentScreen="chat";scrollBot()}else{updateMsgs();updatePeers();updateTypBar();updateToast();updateMode();updateVoiceBar()}}}
 
-function renderConnect(){return '<div class="connect-screen"><div class="connect-card"><h1>⚡ NEXUS</h1><p class="sub">End-to-end encrypted chat with voice. No servers. No accounts.</p><label>YOUR NAME</label><input id="c-name" placeholder="Enter your name" maxlength="20" autofocus><label>PICK A COLOR</label><div class="color-pick">'+COLORS.map((c,i)=>'<div class="color-swatch'+(i===0?" active":"")+'" data-color="'+c+'" style="background:'+c+'"></div>').join("")+'</div><button id="c-create" class="btn-primary" disabled>Create Room</button><div class="divider-text"><div class="line"></div>or join existing<div class="line"></div></div><label>ROOM CODE</label><input id="c-room" class="mono-input" placeholder="ABC123" maxlength="6"><button id="c-join" class="btn-secondary" disabled>Join Room</button>'+(S.peerError?'<div style="color:var(--red);font-size:13px;margin-top:16px;padding:8px;background:var(--bg0);border-radius:6px">'+esc(S.peerError)+'</div>':'')+'</div></div>'}
-function bindConnect(){const n=document.getElementById("c-name"),r=document.getElementById("c-room"),cb=document.getElementById("c-create"),jb=document.getElementById("c-join");let color=COLORS[0];function upd(){cb.disabled=!n.value.trim();jb.disabled=!n.value.trim()||r.value.length<4}n.addEventListener("input",upd);r.addEventListener("input",e=>{e.target.value=e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"");upd()});document.querySelectorAll(".color-swatch").forEach(el=>el.addEventListener("click",()=>{document.querySelectorAll(".color-swatch").forEach(s=>s.classList.remove("active"));el.classList.add("active");color=el.dataset.color}));cb.addEventListener("click",()=>{if(n.value.trim())doCreate(n.value.trim(),color)});jb.addEventListener("click",()=>{if(n.value.trim()&&r.value.length>=4)doJoin(n.value.trim(),color,r.value)});n.addEventListener("keydown",e=>{if(e.key==="Enter"&&!cb.disabled)cb.click()});r.addEventListener("keydown",e=>{if(e.key==="Enter"&&!jb.disabled)jb.click()})}
+function renderConnect(){
+  const persistOn=localStorage.getItem("nexus-persist")==="1";
+  return '<div class="connect-screen"><div class="connect-card"><h1>⚡ NEXUS</h1><p class="sub">End-to-end encrypted chat with voice. No accounts.</p><label>YOUR NAME</label><input id="c-name" placeholder="Enter your name" maxlength="20" autofocus><label>PICK A COLOR</label><div class="color-pick">'+COLORS.map((c,i)=>'<div class="color-swatch'+(i===0?" active":"")+'" data-color="'+c+'" style="background:'+c+'"></div>').join("")+'</div><button id="c-create" class="btn-primary" disabled>Create Room</button><div class="divider-text"><div class="line"></div>or join existing<div class="line"></div></div><label>ROOM CODE</label><input id="c-room" class="mono-input" placeholder="ABC123" maxlength="6"><button id="c-join" class="btn-secondary" disabled>Join Room</button><div style="margin-top:16px;padding-top:12px;border-top:1px solid var(--brd)"><label style="display:flex;align-items:center;gap:8px;cursor:pointer"><input type="checkbox" id="c-persist" '+(persistOn?"checked":"")+'><span style="font-size:12px;color:var(--txt)">💾 Persistent room</span></label><div style="font-size:10px;color:var(--fnt);margin-top:4px;padding-left:24px">Chat history saved in your browser. Room stays active for 10 days.</div></div>'+(S.peerError?'<div style="color:var(--red);font-size:13px;margin-top:16px;padding:8px;background:var(--bg0);border-radius:6px">'+esc(S.peerError)+'</div>':'')+'</div></div>';
+}
+function bindConnect(){const n=document.getElementById("c-name"),r=document.getElementById("c-room"),persist=document.getElementById("c-persist"),cb=document.getElementById("c-create"),jb=document.getElementById("c-join");let color=COLORS[0];
+  function getPersist(){const on=persist?.checked||false;try{localStorage.setItem("nexus-persist",on?"1":"0")}catch(e){}return on}
+  function upd(){cb.disabled=!n.value.trim();jb.disabled=!n.value.trim()||r.value.length<4}n.addEventListener("input",upd);r.addEventListener("input",e=>{e.target.value=e.target.value.toUpperCase().replace(/[^A-Z0-9]/g,"");upd()});document.querySelectorAll(".color-swatch").forEach(el=>el.addEventListener("click",()=>{document.querySelectorAll(".color-swatch").forEach(s=>s.classList.remove("active"));el.classList.add("active");color=el.dataset.color}));cb.addEventListener("click",()=>{if(n.value.trim()){S.persist=getPersist();doCreate(n.value.trim(),color)}});jb.addEventListener("click",()=>{if(n.value.trim()&&r.value.length>=4){S.persist=getPersist();doJoin(n.value.trim(),color,r.value)}});n.addEventListener("keydown",e=>{if(e.key==="Enter"&&!cb.disabled)cb.click()});r.addEventListener("keydown",e=>{if(e.key==="Enter"&&!jb.disabled)jb.click()})}
 
 function renderChat(){
   const voiceHtml='<div class="voice-bar" id="voice-bar">'+(S.voice.joined?
@@ -832,8 +929,12 @@ function updateTypBar(){const bar=document.getElementById("typ-bar");if(!bar)ret
 function updateToast(){const ex=document.querySelector(".copy-toast");if(S.copyToast&&!ex){const t=document.createElement("div");t.className="copy-toast";t.textContent="Room code copied!";document.body.appendChild(t)}else if(!S.copyToast&&ex)ex.remove()}
 function updateMode(){
   const badge=document.getElementById("mode-badge");const um=document.getElementById("user-mode");
-  if(badge){if(S.mode==="p2p"){badge.className="relay-badge p2p";badge.textContent="⚡ P2P"}else if(S.mode==="relay"){badge.className="relay-badge relay";badge.textContent="📡 RELAY"}else{badge.className="relay-badge relay";badge.textContent="⏳ ...";badge.style.opacity=".5"}}
-  if(um)um.textContent=S.mode==="p2p"?"Direct P2P":S.mode==="relay"?"Relay mode":"Connecting...";
+  if(badge){
+    if(S.mode==="p2p"){badge.className="relay-badge p2p";badge.textContent="⚡ P2P"}
+    else if(S.mode==="relay"){badge.className="relay-badge relay";badge.textContent="📡 RELAY"}
+    else{badge.className="relay-badge relay";badge.textContent="⏳ ...";badge.style.opacity=".5"}
+  }
+  if(um)um.textContent=(S.mode==="p2p"?"Direct P2P":S.mode==="relay"?"Relay mode":"Connecting...")+(S.persist?" • 💾":"");
 }
 function updateVoiceBar(){
   const vb=document.getElementById("voice-bar");
@@ -894,4 +995,5 @@ document.addEventListener("keyup",e=>{
 });
 
 doRender();
+openIDB().then(()=>{persistCleanExpired();}).catch(()=>{});
 </script></body></html>
