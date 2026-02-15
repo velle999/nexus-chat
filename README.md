@@ -3,7 +3,7 @@
 **End-to-end encrypted peer-to-peer chat with voice, file sharing, and GIFs — in a single HTML file.**
 
 
-No install. No server. No accounts.
+No install. No server. No accounts. Just open the html file to run portable.
 
 ---
 
