@@ -1,8 +1,8 @@
 # ⚡ NEXUS P2P
 
-**End-to-end encrypted peer-to-peer chat with voice and file sharing — in a single HTML file.**
+**End-to-end encrypted peer-to-peer chat with voice, file sharing, and GIFs — in a single HTML file.**
 
-Nexus P2P is a fully encrypted, decentralized chat app with push-to-talk voice and file sharing. It uses WebRTC for direct connections when possible, and automatically falls back to a WebSocket relay through VPNs and firewalls. All data is encrypted with AES-256-GCM before it leaves your browser — the relay server sees only ciphertext. No accounts, no databases, no servers to deploy.
+Nexus P2P is a fully encrypted, decentralized chat app with push-to-talk voice, file sharing, and a built-in GIPHY-powered GIF picker. It uses WebRTC for direct connections when possible, and automatically falls back to a WebSocket relay through VPNs and firewalls. All data is encrypted with AES-256-GCM before it leaves your browser. No accounts, no databases, no servers to deploy.
 
 ---
 
@@ -11,7 +11,7 @@ Nexus P2P is a fully encrypted, decentralized chat app with push-to-talk voice a
 1. **Create a room** — Enter your name, pick a color, click "Create Room"
 2. **Share the 6-character code** — This code is also the encryption key
 3. **Others join** — They enter the code and derive the same encryption key
-4. **Chat, talk, share files** — Everything is end-to-end encrypted
+4. **Chat, talk, share files, send GIFs** — Everything is end-to-end encrypted
 
 Both transports start in parallel. If direct P2P succeeds, you get the fastest path. If it fails (VPNs, symmetric NAT, corporate firewalls), the MQTT relay kicks in transparently. Either way, the relay never sees plaintext.
 
@@ -23,14 +23,21 @@ Both transports start in parallel. If direct P2P succeeds, you get the fastest p
 - Random 12-byte IV per message — no IV reuse
 - Relay server and signaling server see only encrypted blobs
 - 🔒 E2E indicator in chat header confirms encryption is active
-- Zero-knowledge architecture — no keys stored anywhere except in-browser memory
 
 ### Text Chat
 - Real-time messaging with typing indicators
 - Emoji reactions — toggle per-user, synced across all peers
 - Edit & delete your own messages
 - Message history sync — new joiners receive encrypted chat log
-- System messages — join/leave notifications
+- URLs auto-link; image/GIF URLs auto-embed inline
+- **Notification sound** — two-tone WebAudio chime on incoming messages
+
+### GIF Picker
+- **GIPHY-powered** — click the GIF button to open the picker
+- Browse **trending GIFs** or search by keyword
+- Debounced search (400ms) for responsive results
+- Click a GIF to send — renders inline as an animated image
+- "Powered by GIPHY" attribution included
 
 ### Voice Chat
 - **Push-to-talk** — hold the 🎤 button or spacebar to transmit
@@ -43,11 +50,12 @@ Both transports start in parallel. If direct P2P succeeds, you get the fastest p
 
 ### File Sharing
 - **Three ways to share**: 📎 attach button, drag & drop, or paste from clipboard
-- Image files render inline with preview thumbnails
-- Color-coded file type icons (🖼️ images, 🎬 video, 🎵 audio, 📄 docs, 📦 archives, 💻 code)
+- **GIF files** — dedicated GIF button or upload directly; renders animated inline
+- Image files render with preview thumbnails
+- Color-coded file type icons (🎞️ GIFs, 🖼️ images, 🎬 video, 🎵 audio, 📄 docs, 📦 archives, 💻 code)
 - Click any file card to download
 - Size limits: **25MB** in P2P mode, **500KB** in relay mode
-- Files are encrypted before transmission — relay sees only ciphertext
+- Files are encrypted before transmission
 
 ### Networking
 - **Dual transport** — WebRTC direct + MQTT WebSocket relay
@@ -72,9 +80,17 @@ Open nexus-p2p.html in any modern browser
 
 To test locally, open it in two tabs — create a room in one, join with the code in the other.
 
+### GIPHY Setup
+
+The GIF picker requires a GIPHY API key. To use your own:
+
+1. Create an account at [developers.giphy.com](https://developers.giphy.com)
+2. Create an app to get a beta API key
+3. Replace the `GIPHY_KEY` constant in the code with your key
+
 ### Hosting
 
-To let people connect from different networks, host the file anywhere static:
+Host the file anywhere static:
 
 - **GitHub Pages** — push to a repo, enable Pages
 - **Netlify / Vercel** — drag and drop
@@ -122,10 +138,7 @@ AES-256-GCM encrypt             AES-256-GCM decrypt
 {_e:true, iv:"...", ct:"..."}   {_e:true, iv:"...", ct:"..."}
        │                               ▲
        └──► WebRTC / MQTT ────────────┘
-            (encrypted in transit)
 ```
-
-All peers derive the same AES key from the room code via PBKDF2. The key never leaves the browser. The room code is the shared secret — anyone with the code can decrypt, which is the correct trust model.
 
 ### Dual Transport
 
@@ -134,46 +147,19 @@ All peers derive the same AES key from the room code via PBKDF2. The key never l
 | ⚡ P2P | WebRTC DataChannel | ~20-50ms | Both peers reachable (same network, open NAT) |
 | 📡 Relay | MQTT over WebSocket | ~100-300ms | VPNs, symmetric NAT, strict firewalls |
 
-On room create/join, both transports start simultaneously:
-
-1. AES-256 key derived from room code via PBKDF2
-2. **PeerJS** connects to the signaling server and attempts WebRTC
-3. **MQTT** connects to `wss://broker.hivemq.com:8884/mqtt` and subscribes to the room topic
-4. If WebRTC ICE succeeds → **P2P mode** (green badge)
-5. If ICE fails after 15 seconds → **Relay mode** (amber badge)
-
-In relay mode, all messages are published/subscribed on MQTT topics `nexus/{roomCode}/msg` (text) and `nexus/{roomCode}/voice` (audio). The broker only ever receives encrypted envelopes.
-
 ### Voice Transport
 
 | Mode | Path |
 |------|------|
-| P2P | Mic → MediaRecorder → Opus/WebM blob → AES-256-GCM encrypt → base64 → WebRTC → decrypt → Audio playback |
-| Relay | Mic → MediaRecorder → Opus/WebM blob → AES-256-GCM encrypt → base64 → MQTT → decrypt → Audio playback |
-
-Voice uses `MediaRecorder` with Opus/WebM codec at 24kbps. The complete PTT clip is recorded, encrypted, base64-encoded, and sent as a single packet on button release. Max clip size: ~500KB (~15-20 seconds).
+| P2P | Mic → MediaRecorder → Opus/WebM → AES-256-GCM → WebRTC → decrypt → playback |
+| Relay | Mic → MediaRecorder → Opus/WebM → AES-256-GCM → MQTT → decrypt → playback |
 
 ### File Transport
 
 | Mode | Max Size | Path |
 |------|----------|------|
-| P2P | 25MB | File → base64 → AES-256-GCM encrypt → WebRTC DataChannel |
-| Relay | 500KB | File → base64 → AES-256-GCM encrypt → MQTT publish |
-
-Files use chunked base64 encoding (8KB chunks to avoid stack overflow). Image files include inline preview. File metadata is preserved in sync but binary data is stripped to keep history transfers lightweight.
-
-### ICE Configuration
-
-STUN servers (discover public IP):
-- `stun.l.google.com:19302`
-- `stun1.l.google.com:19302`
-- `stun.cloudflare.com:3478`
-- `freestun.net:3478`
-
-TURN servers (relay when direct fails):
-- `freestun.net:3478` (UDP)
-- `freestun.net:5349` (TCP/TLS)
-- Cloudflare speed test TURN (dynamically fetched at page load)
+| P2P | 25MB | File → base64 → AES-256-GCM → WebRTC DataChannel |
+| Relay | 500KB | File → base64 → AES-256-GCM → MQTT publish |
 
 ### Message Protocol
 
@@ -183,7 +169,7 @@ All message types are encrypted with AES-256-GCM before transmission.
 |------|-----------|-------------|
 | `hello` | Both | Exchange user info on connection |
 | `sync` | Both | Send encrypted message history to new peer |
-| `message` | Both | Chat message (text and/or file attachment) |
+| `message` | Both | Chat message (text, file, or GIF URL) |
 | `typing` | Both | Typing indicator (3s timeout) |
 | `reaction` | Both | Toggle emoji reaction |
 | `edit` | Both | Edit own message content |
@@ -192,41 +178,29 @@ All message types are encrypted with AES-256-GCM before transmission.
 | `voice` | Both | Encrypted audio clip (Opus/WebM) |
 | `leave` | MQTT | Notify room of departure |
 
-## Connection Diagnostics
-
-Click the 🔧 button in the chat header to open the diagnostics panel:
-
-- 🟢 **Green (✓)** — Step succeeded (includes "E2E: room key derived ✓")
-- 🔴 **Red (✗)** — Step failed
-- ⚪ **Gray (•)** — In progress
-
-Key diagnostics: Cloudflare TURN fetch, PeerJS signaling, ICE candidates, MQTT connection, E2E key derivation, DataChannel events, mode switches.
-
 ## Security Model
 
 **What's protected:**
-- All message content, file data, voice audio, metadata (reactions, typing, edits)
+- All message content, file data, voice audio, GIF URLs, metadata (reactions, typing, edits)
 - Encrypted on both WebRTC (P2P) and MQTT (relay) paths
-- The MQTT broker, PeerJS signaling server, and any network intermediary sees only `{_e:true, iv:"...", ct:"..."}` envelopes
 
 **What's NOT protected:**
-- Room code transmission — you share it out-of-band (text, in person, etc.)
-- Connection metadata — the MQTT broker knows which topics are active (room codes), and PeerJS knows peer IDs
-- Timing — the broker can observe when messages are sent and their approximate size
+- Room code transmission — share it out-of-band
+- Connection metadata — the MQTT broker knows which topics are active
+- GIF search queries — sent to GIPHY's API over HTTPS (not through the encrypted channel)
 
 **Trust model:**
-- The room code IS the shared secret. Anyone with the code can derive the key and decrypt.
-- Keys are ephemeral — derived in-memory from the room code, never persisted to disk
-- No key escrow, no recovery — close all tabs and the key is gone
+- The room code IS the shared secret — anyone with it can decrypt
+- Keys are ephemeral — derived in-memory, never persisted to disk
 
 ## Limitations
 
 - **No persistence** — messages exist only in connected browsers' memory
 - **Voice latency** — walkie-talkie style (full clip sent on release, not streaming)
 - **MQTT broker** — uses HiveMQ's free public broker; not guaranteed for production
-- **Scale** — mesh works well for 2–8 peers; voice/file bandwidth scales linearly
+- **Scale** — mesh works well for 2–8 peers
 - **File size in relay** — 500KB limit due to MQTT message size constraints
-- **Room code entropy** — 6 characters from a 32-char alphabet = ~2.4 billion possible codes. Sufficient for casual use, not for nation-state adversaries.
+- **GIPHY rate limit** — beta keys allow 100 API calls/hour
 
 ## External Dependencies
 
@@ -234,10 +208,11 @@ Key diagnostics: Cloudflare TURN fetch, PeerJS signaling, ICE candidates, MQTT c
 |----------|---------|
 | [PeerJS 1.5.4](https://peerjs.com/) | WebRTC signaling and data channels |
 | [MQTT.js 5.10.3](https://github.com/mqttjs/MQTT.js) | MQTT WebSocket client for relay mode |
+| [GIPHY API v1](https://developers.giphy.com/) | GIF search and trending |
 | [Google Fonts](https://fonts.google.com/) | Outfit + JetBrains Mono typefaces |
 | [PeerJS Cloud](https://0.peerjs.com/) | Free signaling server (handshake only) |
 | [HiveMQ Public Broker](https://www.hivemq.com/mqtt/public-mqtt-broker/) | Free MQTT relay (sees only ciphertext) |
-| [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API) | AES-256-GCM + PBKDF2 (built into all modern browsers) |
+| [Web Crypto API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Crypto_API) | AES-256-GCM + PBKDF2 (built into browsers) |
 
 ## License
 
