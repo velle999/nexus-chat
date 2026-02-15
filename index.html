@@ -8,6 +8,7 @@
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700;800&family=Outfit:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.10.3/mqtt.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
 
 
@@ -125,6 +126,19 @@ button:focus:not(:focus-visible){outline:none}
 .gif-grid img:hover{transform:scale(1.03)}
 .gif-grid .gif-loading{grid-column:1/-1;text-align:center;padding:24px;color:var(--fnt);font-size:12px;font-family:var(--mono)}
 .gif-attr{padding:4px 12px 6px;text-align:right;font-size:9px;color:var(--fnt);font-family:var(--mono);border-top:1px solid var(--brd)}
+.panic-btn{background:none;border:1px solid var(--red);color:var(--red);cursor:pointer;padding:6px 12px;border-radius:6px;font-size:11px;font-family:var(--mono);font-weight:700;width:100%;margin-top:4px;transition:all .15s}
+.panic-btn:hover{background:var(--red);color:#fff}
+.share-row{display:flex;gap:6px;margin-top:8px;padding:0 16px}
+.share-row button{flex:1;background:var(--bg3);border:1px solid var(--brd);color:var(--txt);cursor:pointer;padding:6px 0;border-radius:6px;font-size:11px;font-family:var(--mono);display:flex;align-items:center;justify-content:center;gap:4px;transition:all .15s}
+.share-row button:hover{border-color:var(--acc);color:var(--acc)}
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.7);z-index:200;display:flex;align-items:center;justify-content:center;animation:fadeIn .15s ease}
+.modal-card{background:var(--bg2);border:1px solid var(--brdL);border-radius:16px;padding:24px;max-width:360px;width:90%;box-shadow:0 16px 64px rgba(0,0,0,.6);animation:modalIn .2s ease;text-align:center}
+.modal-card h3{font-family:var(--mono);font-size:14px;color:var(--acc);margin-bottom:12px;letter-spacing:1px}
+.modal-card canvas,.modal-card svg{border-radius:12px;margin:8px auto;display:block}
+.modal-card .link-box{background:var(--bg0);border:1px solid var(--brd);border-radius:8px;padding:10px;font-family:var(--mono);font-size:11px;color:var(--acc);word-break:break-all;margin:12px 0;text-align:left;max-height:80px;overflow-y:auto;user-select:all}
+.modal-card button{background:var(--bg3);border:1px solid var(--brd);color:var(--txt);cursor:pointer;padding:8px 16px;border-radius:8px;font-size:12px;font-family:var(--mono);margin:4px;transition:all .15s}
+.modal-card button:hover{border-color:var(--acc);color:var(--acc)}
+.modal-card .close-modal{position:absolute;top:12px;right:12px;background:none;border:none;color:var(--mut);cursor:pointer;font-size:18px;padding:4px}
 </style>
 </head>
 <body>
@@ -387,6 +401,123 @@ async function persistCleanExpired(){
 
 // Auto-save every 5 seconds when persist is on
 setInterval(()=>{if(S.persist&&S.screen==="chat")persistSave()},5000);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROOM LINKS — shareable URL with room code, salt, and optional nickname
+// Format: page.html#room=CODE&s=SALT&n=NAME
+// The salt is the E2E_SALT constant — included so links are self-contained
+// ═══════════════════════════════════════════════════════════════════════════
+function generateRoomLink(name){
+  const base=location.href.split("#")[0].split("?")[0];
+  const params=new URLSearchParams();
+  params.set("room",S.roomCode);
+  params.set("s",E2E_SALT);
+  if(name)params.set("n",name);
+  if(S.persist)params.set("p","1");
+  return base+"#"+params.toString();
+}
+
+function copyRoomLink(){
+  const link=generateRoomLink();
+  navigator.clipboard?.writeText(link).then(()=>{
+    S.copyToast=true;qr();setTimeout(()=>{S.copyToast=false;qr()},2000);
+  });
+}
+
+function showLinkModal(){
+  const link=generateRoomLink();
+  closeModal();
+  const overlay=document.createElement("div");
+  overlay.className="modal-overlay";overlay.id="modal-overlay";
+  overlay.innerHTML='<div class="modal-card" style="position:relative"><h3>🔗 ROOM INVITE LINK</h3><div class="link-box" id="room-link-text">'+esc(link)+'</div><div style="display:flex;gap:8px;justify-content:center"><button id="copy-link-btn">📋 Copy Link</button><button id="close-link-btn">Close</button></div></div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click",e=>{if(e.target===overlay)closeModal()});
+  document.getElementById("copy-link-btn")?.addEventListener("click",()=>{
+    navigator.clipboard?.writeText(link).then(()=>{
+      document.getElementById("copy-link-btn").textContent="✓ Copied!";
+      setTimeout(()=>{const b=document.getElementById("copy-link-btn");if(b)b.textContent="📋 Copy Link"},1500);
+    });
+  });
+  document.getElementById("close-link-btn")?.addEventListener("click",closeModal);
+}
+
+function parseRoomLink(){
+  const hash=location.hash.slice(1);
+  if(!hash)return null;
+  try{
+    const params=new URLSearchParams(hash);
+    const room=params.get("room");
+    if(!room||room.length<4)return null;
+    return{room:room.toUpperCase(),name:params.get("n")||"",persist:params.get("p")==="1"};
+  }catch(e){return null}
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PANIC MODE — wipe everything immediately
+// ═══════════════════════════════════════════════════════════════════════════
+function panicWipe(){
+  // 1. Disconnect all peers
+  try{S.conns.forEach(({conn})=>{try{conn.close()}catch(e){}});S.conns.clear()}catch(e){}
+  // 2. Disconnect MQTT
+  try{if(S.mqtt){S.mqtt.end(true);S.mqtt=null}}catch(e){}
+  // 3. Destroy PeerJS
+  try{if(S.peer){S.peer.destroy();S.peer=null}}catch(e){}
+  // 4. Stop mic
+  try{if(S.voice.micStream){S.voice.micStream.getTracks().forEach(t=>t.stop());S.voice.micStream=null}}catch(e){}
+  try{if(S.voice.audioCtx){S.voice.audioCtx.close();S.voice.audioCtx=null}}catch(e){}
+  // 5. Wipe crypto key
+  S.cryptoKey=null;
+  // 6. Overwrite message content in memory
+  for(const m of S.messages){if(m.content)m.content="";if(m.file)m.file=null}
+  S.messages.length=0;
+  // 7. Wipe all state
+  S.knownUsers.clear();S.typing.clear();
+  S.roomCode="";S.me=null;S.connected=false;
+  S.mqttReady=false;S.webrtcFailed=false;
+  S.diag.length=0;
+  // 8. Wipe persistent data for ALL rooms
+  try{indexedDB.deleteDatabase(IDB_NAME)}catch(e){}
+  // 9. Clear localStorage
+  try{localStorage.removeItem("nexus-persist")}catch(e){}
+  // 10. Clear URL hash
+  try{history.replaceState(null,"",location.pathname)}catch(e){}
+  // 11. Wipe notification audio context
+  try{if(notifCtx){notifCtx.close();notifCtx=null}}catch(e){}
+  // 12. Nuke the DOM and reload
+  document.getElementById("app").innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;color:var(--red);font-family:var(--mono);font-size:14px;text-align:center"><div>🚨 PANIC WIPE COMPLETE<br><br><span style="color:var(--fnt);font-size:12px">All keys, messages, and connections destroyed.</span><br><br><button onclick="location.reload()" style="background:var(--bg3);border:1px solid var(--brd);color:var(--txt);cursor:pointer;padding:10px 24px;border-radius:8px;font-family:var(--mono);font-size:13px">Restart NEXUS</button></div></div>';
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// QR CODE — generate scannable QR with room invite link
+// ═══════════════════════════════════════════════════════════════════════════
+function showQRModal(){
+  const link=generateRoomLink();
+  closeModal();
+  const overlay=document.createElement("div");
+  overlay.className="modal-overlay";overlay.id="modal-overlay";
+  overlay.innerHTML='<div class="modal-card" style="position:relative"><h3>📱 SCAN TO JOIN</h3><div id="qr-container" style="display:flex;justify-content:center;padding:8px"></div><div style="font-family:var(--mono);font-size:11px;color:var(--acc);margin:8px 0;letter-spacing:2px;font-weight:700">'+esc(S.roomCode)+'</div><div style="font-size:10px;color:var(--fnt);margin-bottom:12px">Scan this QR code to join the room instantly</div><div style="display:flex;gap:8px;justify-content:center"><button id="copy-qr-link">📋 Copy Link</button><button id="close-qr-btn">Close</button></div></div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener("click",e=>{if(e.target===overlay)closeModal()});
+  // Generate QR
+  const container=document.getElementById("qr-container");
+  if(container&&typeof QRCode!=="undefined"){
+    new QRCode(container,{text:link,width:200,height:200,colorDark:"#00ffd5",colorLight:"#06060e",correctLevel:QRCode.CorrectLevel.M});
+  }else if(container){
+    container.innerHTML='<div style="color:var(--fnt);font-size:12px;padding:20px">QR library not loaded</div>';
+  }
+  document.getElementById("copy-qr-link")?.addEventListener("click",()=>{
+    navigator.clipboard?.writeText(link).then(()=>{
+      document.getElementById("copy-qr-link").textContent="✓ Copied!";
+      setTimeout(()=>{const b=document.getElementById("copy-qr-link");if(b)b.textContent="📋 Copy Link"},1500);
+    });
+  });
+  document.getElementById("close-qr-btn")?.addEventListener("click",closeModal);
+}
+
+function closeModal(){
+  const m=document.getElementById("modal-overlay");
+  if(m)m.remove();
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // UNIFIED SEND
@@ -845,13 +976,16 @@ function renderChat(){
     '<button id="voice-join" style="background:none;border:1px solid var(--brd);color:var(--acc);cursor:pointer;padding:8px 16px;border-radius:8px;font-size:13px;font-family:var(--mono);display:flex;align-items:center;gap:6px;margin:0 auto"><span style="font-size:16px">🎙️</span> Join Voice</button>')+
     '</div>';
 
-  return '<div class="sidebar" id="sidebar"><div class="sb-header"><span style="font-size:20px">⚡</span><h2>NEXUS P2P</h2></div><div style="padding:12px 16px"><div class="room-code-box" id="copy-code" title="Click to copy"><div style="flex:1"><div style="font-size:10px;color:var(--mut);font-weight:600;letter-spacing:1px">ROOM CODE</div><div style="font-family:var(--mono);font-size:16px;color:var(--acc);font-weight:700;letter-spacing:2px">'+S.roomCode+'</div></div><span style="font-size:16px;color:var(--mut)">📋</span></div><div style="font-size:11px;color:var(--fnt);text-align:center;margin-top:4px">Share this code to invite others</div></div><div style="padding:0 16px 8px"><div style="height:1px;background:var(--brd)"></div></div><div style="padding:4px 16px 8px;font-size:10px;font-weight:700;letter-spacing:1.5px;color:var(--fnt)" id="sb-count">PEERS — 1</div><div style="flex:1;overflow-y:auto;padding:0 8px" id="sb-peers"></div>'+voiceHtml+'<div class="user-panel"><div class="peer-av" style="background:linear-gradient(135deg,'+S.me.color+'30,'+S.me.color+'10);border:2px solid '+S.me.color+'55;color:'+S.me.color+';width:32px;height:32px;min-width:32px;font-size:12px"><div class="st-dot" style="background:var(--grn)"></div>'+esc(S.me.avatar)+'</div><div style="flex:1"><div style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+S.me.color+'">'+esc(S.me.name)+'</div><div style="font-size:10px;color:var(--fnt)" id="user-mode">Connecting...</div></div></div></div><div class="chat-area"><div class="chat-header"><button class="menu-btn" id="menu-btn" style="background:none;border:none;color:var(--mut);cursor:pointer;padding:4px;display:none">☰</button><span id="mode-badge" class="relay-badge relay">RELAY</span><h3>Room Chat</h3><span style="font-size:11px;color:var(--grn);font-family:var(--mono);margin-left:8px" title="End-to-end encrypted">🔒 E2E</span><span style="color:var(--fnt);font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:12px" id="hdr-info">connecting...</span><button id="tog-mem" style="background:none;border:none;color:var(--txt);cursor:pointer;padding:6px;border-radius:6px;display:flex;align-items:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></button><button id="tog-diag" style="background:none;border:none;color:var(--fnt);cursor:pointer;padding:6px;border-radius:6px;font-size:14px;font-family:var(--mono)" title="Diagnostics">🔧</button></div><div class="msg-list" id="msg-list"></div><div class="typing-bar" id="typ-bar"></div><div id="mobile-voice" style="display:none"></div><div class="input-area"><div class="input-row"><input type="file" id="file-in" style="display:none" multiple><input type="file" id="gif-in" style="display:none" accept="image/gif,.gif"><button id="attach-btn" title="Attach file" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--acc);font-size:14px;display:flex;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg></button><button id="gif-btn" title="Send GIF" style="padding:6px 8px;cursor:pointer;border-radius:4px;background:none;border:1px solid var(--brd);color:var(--mut);font-size:12px;font-family:var(--mono);font-weight:800;display:flex;align-items:center;flex-shrink:0;letter-spacing:1px;line-height:1">GIF</button><input id="msg-in" placeholder="Send a message…" autocomplete="off"><button id="mobile-mic-btn" title="Voice chat" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--mut);font-size:14px;display:none;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button><button class="send-btn" id="send-btn" title="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button></div></div></div><div class="members-panel" id="mem-panel"><div id="mem-hdr" class="mem-header">ONLINE — 1</div><div id="mem-list"></div></div><div id="diag-panel" style="display:none;position:fixed;bottom:0;right:0;width:420px;max-width:90vw;max-height:50vh;background:var(--bg0);border:1px solid var(--brdL);border-radius:12px 0 0 0;z-index:100;overflow:hidden;box-shadow:0 -4px 24px rgba(0,0,0,.5)"><div style="padding:10px 14px;border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:8px"><span style="font-size:14px">🔧</span><span style="font-size:12px;font-weight:700;color:var(--acc);font-family:var(--mono);flex:1">DIAGNOSTICS</span><button id="diag-close" style="background:none;border:none;color:var(--mut);cursor:pointer;font-size:16px">✕</button></div><div id="diag-log" style="padding:8px 12px;overflow-y:auto;max-height:calc(50vh - 40px);font-family:var(--mono);font-size:11px;line-height:1.8"></div></div>'}
+  return '<div class="sidebar" id="sidebar"><div class="sb-header"><span style="font-size:20px">⚡</span><h2>NEXUS P2P</h2></div><div style="padding:12px 16px"><div class="room-code-box" id="copy-code" title="Click to copy"><div style="flex:1"><div style="font-size:10px;color:var(--mut);font-weight:600;letter-spacing:1px">ROOM CODE</div><div style="font-family:var(--mono);font-size:16px;color:var(--acc);font-weight:700;letter-spacing:2px">'+S.roomCode+'</div></div><span style="font-size:16px;color:var(--mut)">📋</span></div><div style="font-size:11px;color:var(--fnt);text-align:center;margin-top:4px">Share this code to invite others</div></div><div class="share-row"><button id="share-link-btn" title="Copy invite link">🔗 Link</button><button id="share-qr-btn" title="Show QR code">📱 QR</button></div><div style="padding:8px 16px 4px"><button class="panic-btn" id="panic-btn" title="Emergency wipe — destroy all data">🚨 PANIC</button></div><div style="padding:4px 16px 8px"><div style="height:1px;background:var(--brd)"></div></div><div style="padding:4px 16px 8px;font-size:10px;font-weight:700;letter-spacing:1.5px;color:var(--fnt)" id="sb-count">PEERS — 1</div><div style="flex:1;overflow-y:auto;padding:0 8px" id="sb-peers"></div>'+voiceHtml+'<div class="user-panel"><div class="peer-av" style="background:linear-gradient(135deg,'+S.me.color+'30,'+S.me.color+'10);border:2px solid '+S.me.color+'55;color:'+S.me.color+';width:32px;height:32px;min-width:32px;font-size:12px"><div class="st-dot" style="background:var(--grn)"></div>'+esc(S.me.avatar)+'</div><div style="flex:1"><div style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+S.me.color+'">'+esc(S.me.name)+'</div><div style="font-size:10px;color:var(--fnt)" id="user-mode">Connecting...</div></div></div></div><div class="chat-area"><div class="chat-header"><button class="menu-btn" id="menu-btn" style="background:none;border:none;color:var(--mut);cursor:pointer;padding:4px;display:none">☰</button><span id="mode-badge" class="relay-badge relay">RELAY</span><h3>Room Chat</h3><span style="font-size:11px;color:var(--grn);font-family:var(--mono);margin-left:8px" title="End-to-end encrypted">🔒 E2E</span><span style="color:var(--fnt);font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:12px" id="hdr-info">connecting...</span><button id="tog-mem" style="background:none;border:none;color:var(--txt);cursor:pointer;padding:6px;border-radius:6px;display:flex;align-items:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></button><button id="tog-diag" style="background:none;border:none;color:var(--fnt);cursor:pointer;padding:6px;border-radius:6px;font-size:14px;font-family:var(--mono)" title="Diagnostics">🔧</button></div><div class="msg-list" id="msg-list"></div><div class="typing-bar" id="typ-bar"></div><div id="mobile-voice" style="display:none"></div><div class="input-area"><div class="input-row"><input type="file" id="file-in" style="display:none" multiple><input type="file" id="gif-in" style="display:none" accept="image/gif,.gif"><button id="attach-btn" title="Attach file" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--acc);font-size:14px;display:flex;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg></button><button id="gif-btn" title="Send GIF" style="padding:6px 8px;cursor:pointer;border-radius:4px;background:none;border:1px solid var(--brd);color:var(--mut);font-size:12px;font-family:var(--mono);font-weight:800;display:flex;align-items:center;flex-shrink:0;letter-spacing:1px;line-height:1">GIF</button><input id="msg-in" placeholder="Send a message…" autocomplete="off"><button id="mobile-mic-btn" title="Voice chat" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--mut);font-size:14px;display:none;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button><button class="send-btn" id="send-btn" title="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button></div></div></div><div class="members-panel" id="mem-panel"><div id="mem-hdr" class="mem-header">ONLINE — 1</div><div id="mem-list"></div></div><div id="diag-panel" style="display:none;position:fixed;bottom:0;right:0;width:420px;max-width:90vw;max-height:50vh;background:var(--bg0);border:1px solid var(--brdL);border-radius:12px 0 0 0;z-index:100;overflow:hidden;box-shadow:0 -4px 24px rgba(0,0,0,.5)"><div style="padding:10px 14px;border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:8px"><span style="font-size:14px">🔧</span><span style="font-size:12px;font-weight:700;color:var(--acc);font-family:var(--mono);flex:1">DIAGNOSTICS</span><button id="diag-close" style="background:none;border:none;color:var(--mut);cursor:pointer;font-size:16px">✕</button></div><div id="diag-log" style="padding:8px 12px;overflow-y:auto;max-height:calc(50vh - 40px);font-family:var(--mono);font-size:11px;line-height:1.8"></div></div>'}
 
 function bindChat(){
   const inp=document.getElementById("msg-in");inp?.focus();
   inp?.addEventListener("keydown",e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();sendMsg(inp.value);inp.value=""}else sendTyp()});
   document.getElementById("send-btn")?.addEventListener("click",()=>{if(inp?.value){sendMsg(inp.value);inp.value="";inp.focus()}});
   document.getElementById("copy-code")?.addEventListener("click",copyCode);
+  document.getElementById("share-link-btn")?.addEventListener("click",showLinkModal);
+  document.getElementById("share-qr-btn")?.addEventListener("click",showQRModal);
+  document.getElementById("panic-btn")?.addEventListener("click",()=>{if(confirm("🚨 PANIC WIPE\n\nThis will immediately:\n• Destroy all encryption keys\n• Disconnect all peers\n• Wipe all messages\n• Delete persistent data\n• Reload the app\n\nThis cannot be undone. Continue?"))panicWipe()});
   document.getElementById("tog-mem")?.addEventListener("click",()=>{S.showMembers=!S.showMembers;const p=document.getElementById("mem-panel");if(p)p.style.display=S.showMembers?"":"none"});
   document.getElementById("menu-btn")?.addEventListener("click",()=>{S.mobileSidebar=!S.mobileSidebar;document.getElementById("sidebar")?.classList.toggle("open",S.mobileSidebar)});
   document.getElementById("tog-diag")?.addEventListener("click",()=>{const p=document.getElementById("diag-panel");if(p){p.style.display=p.style.display==="none"?"block":"none";if(p.style.display==="block"){const el=document.getElementById("diag-log");if(el){el.innerHTML=S.diag.map(d=>'<div style="color:'+(d.ok===true?"var(--grn)":d.ok===false?"var(--red)":"var(--mut)")+'"><span style="opacity:.5">'+d.t+'</span> '+(d.ok===true?"✓ ":d.ok===false?"✗ ":"• ")+esc(d.msg)+'</div>').join("");el.scrollTop=el.scrollHeight}}}});
@@ -993,7 +1127,30 @@ document.addEventListener("keydown",e=>{
 document.addEventListener("keyup",e=>{
   if(e.code==="Space"&&S.voice.transmitting){voiceStopTx()}
 });
+// Panic keyboard shortcut: Ctrl+Shift+X
+document.addEventListener("keydown",e=>{
+  if(e.ctrlKey&&e.shiftKey&&e.code==="KeyX"&&S.screen==="chat"){e.preventDefault();panicWipe()}
+});
+// Escape to close modals
+document.addEventListener("keydown",e=>{if(e.key==="Escape")closeModal()});
 
 doRender();
 openIDB().then(()=>{persistCleanExpired();}).catch(()=>{});
+
+// Auto-join from URL hash (room invite link)
+(function(){
+  const invite=parseRoomLink();
+  if(!invite)return;
+  // Pre-fill connect screen, wait for render
+  setTimeout(()=>{
+    const nameIn=document.getElementById("c-name");
+    const roomIn=document.getElementById("c-room");
+    const persistCb=document.getElementById("c-persist");
+    if(roomIn){roomIn.value=invite.room;roomIn.dispatchEvent(new Event("input"))}
+    if(invite.name&&nameIn){nameIn.value=invite.name;nameIn.dispatchEvent(new Event("input"))}
+    if(invite.persist&&persistCb)persistCb.checked=true;
+    // Clear hash so refresh doesn't re-trigger
+    try{history.replaceState(null,"",location.pathname)}catch(e){}
+  },100);
+})();
 </script></body></html>
