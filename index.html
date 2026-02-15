@@ -149,6 +149,14 @@ button:focus:not(:focus-visible){outline:none}
 .quick-reacts{display:flex;gap:1px;background:var(--bg3);border-radius:8px;border:1px solid var(--brdL);padding:2px;position:absolute;bottom:calc(100% + 4px);right:0;box-shadow:0 4px 16px rgba(0,0,0,.4);z-index:10;animation:fadeIn .1s ease}
 .quick-reacts button{background:none;border:none;cursor:pointer;font-size:16px;padding:4px 6px;border-radius:4px;transition:all .1s}
 .quick-reacts button:hover{background:rgba(255,255,255,.1);transform:scale(1.2)}
+.compact .hover-time{display:none;font-size:10px;color:var(--fnt);font-family:var(--mono);white-space:nowrap;margin-right:4px;flex-shrink:0}
+.compact:hover .hover-time{display:inline}
+.read-ticks{font-size:10px;color:var(--fnt);margin-left:4px;font-family:var(--mono)}
+.read-ticks.seen{color:var(--acc)}
+.unread-divider{display:flex;align-items:center;gap:10px;padding:4px 16px;margin:4px 0}
+.unread-divider .line{flex:1;height:1px;background:var(--red)}
+.unread-divider span{font-size:10px;font-weight:700;color:var(--red);font-family:var(--mono);letter-spacing:1px;white-space:nowrap}
+.mute-btn{background:none;border:none;cursor:pointer;padding:6px;border-radius:6px;font-size:14px;color:var(--fnt);display:flex;align-items:center}
 </style>
 </head>
 <body>
@@ -162,6 +170,7 @@ const EMOJIS=["👍","👎","😂","😢","❤️","🔥","🎉","💀"];
 const RC="ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 function genCode(){let c="";for(let i=0;i<6;i++)c+=RC[Math.floor(Math.random()*RC.length)];return c}
 function fmtTime(ts){return new Date(ts).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})}
+function fmtTimeFull(ts){return new Date(ts).toLocaleString([],{month:"short",day:"numeric",hour:"2-digit",minute:"2-digit",second:"2-digit"})}
 function fmtDate(ts){const d=new Date(ts),n=new Date();if(n-d<86400000&&d.getDate()===n.getDate())return"Today";if(n-d<172800000)return"Yesterday";return d.toLocaleDateString([],{month:"short",day:"numeric"})}
 function esc(s){if(!s)return"";const d=document.createElement("div");d.textContent=s;return d.innerHTML}
 
@@ -178,7 +187,11 @@ const S={screen:"connect",me:null,roomCode:"",peer:null,mqtt:null,
   // Persistence
   persist:false,
   // Reply
-  replyTo:null
+  replyTo:null,
+  // Read receipts & UI
+  muted:localStorage.getItem("nexus-muted")==="1",
+  lastSeenTs:0,unreadDividerTs:0,
+  readReceipts:new Map() // peerId -> {ts, userName}
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -248,6 +261,7 @@ function qr(){if(!renderQ){renderQ=true;requestAnimationFrame(doRender)}}
 // ── Notification Sound (WebAudio oscillator) ──────────────────────────────
 let notifCtx=null;
 function playNotif(){
+  if(S.muted)return;
   try{
     if(!notifCtx)notifCtx=new(window.AudioContext||window.webkitAudioContext)();
     const t=notifCtx.currentTime;
@@ -326,12 +340,14 @@ function handleRelayMsg(data){
   switch(data.type){
     case"hello":{const uid=data.user?.id;if(!uid||uid===S.me?.id)break;if(!S.knownUsers.has(uid)){S.knownUsers.set(uid,data.user);sysMsg(data.user.name+" connected");mqttSend({type:"hello",user:S.me});if(S.messages.length)mqttSend({type:"sync",messages:stripFilesForSync(S.messages)})}qr();break}
     case"sync":{const have=new Set(S.messages.map(m=>m.id));const nu=(data.messages||[]).filter(m=>!have.has(m.id));if(nu.length){S.messages.push(...nu);S.messages.sort((a,b)=>a.ts-b.ts);qr();scrollBot()}break}
-    case"message":{if(!S.messages.find(m=>m.id===data.msg?.id)){S.messages.push(data.msg);S.typing.delete(data.msg?.userId);playNotif();qr();scrollBot()}break}
+    case"message":{if(!S.messages.find(m=>m.id===data.msg?.id)){S.messages.push(data.msg);S.typing.delete(data.msg?.userId);playNotif();const ml=document.getElementById("msg-list");const atBot=ml?ml.scrollHeight-ml.scrollTop-ml.clientHeight<120:true;if(!atBot&&!S.unreadDividerTs)S.unreadDividerTs=data.msg.ts-1;qr();if(atBot)scrollBot()}break}
     case"typing":{const uid=data.userId;if(!uid||uid===S.me?.id)break;if(S.typing.has(uid))clearTimeout(S.typing.get(uid));S.typing.set(uid,setTimeout(()=>{S.typing.delete(uid);qr()},3000));qr();break}
     case"reaction":{const msg=S.messages.find(m=>m.id===data.msgId);if(!msg)break;if(!msg.reactions)msg.reactions={};if(!msg.reactions[data.emoji])msg.reactions[data.emoji]={count:0,users:[]};const r=msg.reactions[data.emoji],idx=r.users.indexOf(data.userId);if(idx>=0){r.users.splice(idx,1);r.count--;if(r.count<=0)delete msg.reactions[data.emoji]}else{r.users.push(data.userId);r.count++}qr();break}
     case"edit":{const msg=S.messages.find(m=>m.id===data.msgId);if(msg){msg.content=data.content;msg.edited=true;qr()}break}
     case"delete":{S.messages=S.messages.filter(m=>m.id!==data.msgId);qr();break}
     case"leave":{S.knownUsers.delete(data.userId);if(data.userName)sysMsg(data.userName+" left");qr();break}
+    case"seen":{if(data.userId&&data.userId!==S.me?.id&&data.ts){S.readReceipts.set(data.userId,{ts:data.ts,userName:data.userName||"?"});qr()}break}
+    case"panic":{if(data.userId&&data.userId!==S.me?.id){S.knownUsers.delete(data.userId);S.readReceipts.delete(data.userId);S.typing.delete(data.userId);if(data.userName)sysMsg("🚨 "+data.userName+" burned the room and left");qr()}break}
   }
 }
 
@@ -467,7 +483,13 @@ function parseRoomLink(){
 // ═══════════════════════════════════════════════════════════════════════════
 // PANIC MODE — wipe everything immediately
 // ═══════════════════════════════════════════════════════════════════════════
-function panicWipe(){
+async function panicWipe(){
+  // 0. Broadcast panic to all peers via normal encrypted channels
+  try{
+    await broadcast({type:"panic",userId:S.me?.id,userName:S.me?.name});
+  }catch(e){}
+  // Brief delay to let messages flush through transports
+  await new Promise(r=>setTimeout(r,300));
   // 1. Disconnect all peers
   try{S.conns.forEach(({conn})=>{try{conn.close()}catch(e){}});S.conns.clear()}catch(e){}
   // 2. Disconnect MQTT
@@ -483,10 +505,10 @@ function panicWipe(){
   for(const m of S.messages){if(m.content)m.content="";if(m.file)m.file=null}
   S.messages.length=0;
   // 7. Wipe all state
-  S.knownUsers.clear();S.typing.clear();
+  S.knownUsers.clear();S.typing.clear();S.readReceipts.clear();
   S.roomCode="";S.me=null;S.connected=false;
   S.mqttReady=false;S.webrtcFailed=false;
-  S.diag.length=0;
+  S.diag.length=0;S.replyTo=null;
   // 8. Wipe persistent data for ALL rooms
   try{indexedDB.deleteDatabase(IDB_NAME)}catch(e){}
   // 9. Clear localStorage
@@ -495,7 +517,7 @@ function panicWipe(){
   try{history.replaceState(null,"",location.pathname)}catch(e){}
   // 11. Wipe notification audio context
   try{if(notifCtx){notifCtx.close();notifCtx=null}}catch(e){}
-  // 12. Nuke the DOM and reload
+  // 12. Nuke the DOM
   document.getElementById("app").innerHTML='<div style="display:flex;height:100vh;align-items:center;justify-content:center;color:var(--red);font-family:var(--mono);font-size:14px;text-align:center"><div>🚨 PANIC WIPE COMPLETE<br><br><span style="color:var(--fnt);font-size:12px">All keys, messages, and connections destroyed.</span><br><br><button onclick="location.reload()" style="background:var(--bg3);border:1px solid var(--brd);color:var(--txt);cursor:pointer;padding:10px 24px;border-radius:8px;font-family:var(--mono);font-size:13px">Restart NEXUS</button></div></div>';
 }
 
@@ -582,13 +604,15 @@ function onWebRTCMsg(from,data){
   switch(data.type){
     case"hello":{const e=S.conns.get(from);if(!e)break;e.user=data.user;S.knownUsers.set(from,data.user);if(!e.helloed){safeSend(e.conn,{type:"hello",user:S.me});e.helloed=true;if(S.messages.length)safeSend(e.conn,{type:"sync",messages:stripFilesForSync(S.messages)})}setTimeout(()=>{const ids=[...S.conns.keys()].filter(id=>id!==from);if(ids.length)safeSend(e.conn,{type:"peers",ids})},800);sysMsg(data.user.name+" connected");qr();break}
     case"sync":{const have=new Set(S.messages.map(m=>m.id));const nu=(data.messages||[]).filter(m=>!have.has(m.id));if(nu.length){S.messages.push(...nu);S.messages.sort((a,b)=>a.ts-b.ts);qr();scrollBot()}break}
-    case"message":{if(!S.messages.find(m=>m.id===data.msg?.id)){S.messages.push(data.msg);S.typing.delete(data.msg?.userId);playNotif();qr();scrollBot()}break}
+    case"message":{if(!S.messages.find(m=>m.id===data.msg?.id)){S.messages.push(data.msg);S.typing.delete(data.msg?.userId);playNotif();const ml=document.getElementById("msg-list");const atBot=ml?ml.scrollHeight-ml.scrollTop-ml.clientHeight<120:true;if(!atBot&&!S.unreadDividerTs)S.unreadDividerTs=data.msg.ts-1;qr();if(atBot)scrollBot()}break}
     case"typing":{const uid=data.userId||from;if(S.typing.has(uid))clearTimeout(S.typing.get(uid));S.typing.set(uid,setTimeout(()=>{S.typing.delete(uid);qr()},3000));qr();break}
     case"reaction":{const msg=S.messages.find(m=>m.id===data.msgId);if(!msg)break;if(!msg.reactions)msg.reactions={};if(!msg.reactions[data.emoji])msg.reactions[data.emoji]={count:0,users:[]};const r=msg.reactions[data.emoji],idx=r.users.indexOf(data.userId);if(idx>=0){r.users.splice(idx,1);r.count--;if(r.count<=0)delete msg.reactions[data.emoji]}else{r.users.push(data.userId);r.count++}qr();break}
     case"edit":{const msg=S.messages.find(m=>m.id===data.msgId);if(msg){msg.content=data.content;msg.edited=true;qr()}break}
     case"delete":{S.messages=S.messages.filter(m=>m.id!==data.msgId);qr();break}
     case"peers":{(data.ids||[]).forEach(id=>{if(id!==S.peer?.id&&!S.conns.has(id))setTimeout(()=>connectTo(id),200+Math.random()*500)});break}
     case"voice":{handleVoiceRelay(data);break}
+    case"seen":{if(data.userId&&data.userId!==S.me?.id&&data.ts){S.readReceipts.set(data.userId,{ts:data.ts,userName:data.userName||"?"});qr()}break}
+    case"panic":{if(data.userId&&data.userId!==S.me?.id){S.conns.delete(from);S.knownUsers.delete(data.userId);S.readReceipts.delete(data.userId);S.typing.delete(data.userId);if(data.userName)sysMsg("🚨 "+data.userName+" burned the room and left");qr()}break}
   }
 }
 
@@ -922,7 +946,21 @@ function doEdit(mid,t){const msg=S.messages.find(m=>m.id===mid);if(msg&&msg.user
 function doDelete(mid){const msg=S.messages.find(m=>m.id===mid);if(msg&&msg.userId===S.me.id){S.messages=S.messages.filter(m=>m.id!==mid);broadcast({type:"delete",msgId:mid});persistDeleteMsg(mid);qr()}}
 function sysMsg(t){S.messages.push({id:"sys-"+Date.now()+Math.random().toString(36).slice(2,6),system:true,content:t,ts:Date.now()});qr();scrollBot()}
 function copyCode(){navigator.clipboard?.writeText(S.roomCode).then(()=>{S.copyToast=true;qr();setTimeout(()=>{S.copyToast=false;qr()},2000)})}
-function scrollBot(){setTimeout(()=>{const el=document.getElementById("msg-list");if(el)el.scrollTop=el.scrollHeight},30)}
+function scrollBot(){setTimeout(()=>{const el=document.getElementById("msg-list");if(el){el.scrollTop=el.scrollHeight;sendSeen()}},30)}
+
+// ── Read receipts ─────────────────────────────────────────────────────────
+let seenTimer=null;
+function sendSeen(){
+  clearTimeout(seenTimer);
+  seenTimer=setTimeout(()=>{
+    const last=S.messages.filter(m=>!m.system).pop();
+    if(!last)return;
+    const ts=last.ts;
+    if(ts<=S.lastSeenTs)return;
+    S.lastSeenTs=ts;
+    broadcast({type:"seen",userId:S.me?.id,userName:S.me?.name,ts});
+  },300);
+}
 
 // ── Create / Join ──────────────────────────────────────────────────────────
 async function doCreate(name,color){
@@ -988,7 +1026,7 @@ function renderChat(){
     '<button id="voice-join" style="background:none;border:1px solid var(--brd);color:var(--acc);cursor:pointer;padding:8px 16px;border-radius:8px;font-size:13px;font-family:var(--mono);display:flex;align-items:center;gap:6px;margin:0 auto"><span style="font-size:16px">🎙️</span> Join Voice</button>')+
     '</div>';
 
-  return '<div class="sidebar" id="sidebar"><div class="sb-header"><span style="font-size:20px">⚡</span><h2>NEXUS P2P</h2></div><div style="padding:12px 16px"><div class="room-code-box" id="copy-code" title="Click to copy"><div style="flex:1"><div style="font-size:10px;color:var(--mut);font-weight:600;letter-spacing:1px">ROOM CODE</div><div style="font-family:var(--mono);font-size:16px;color:var(--acc);font-weight:700;letter-spacing:2px">'+S.roomCode+'</div></div><span style="font-size:16px;color:var(--mut)">📋</span></div><div style="font-size:11px;color:var(--fnt);text-align:center;margin-top:4px">Share this code to invite others</div></div><div class="share-row"><button id="share-link-btn" title="Copy invite link">🔗 Link</button><button id="share-qr-btn" title="Show QR code">📱 QR</button></div><div style="padding:8px 16px 4px"><button class="panic-btn" id="panic-btn" title="Emergency wipe — destroy all data">🚨 PANIC</button></div><div style="padding:4px 16px 8px"><div style="height:1px;background:var(--brd)"></div></div><div style="padding:4px 16px 8px;font-size:10px;font-weight:700;letter-spacing:1.5px;color:var(--fnt)" id="sb-count">PEERS — 1</div><div style="flex:1;overflow-y:auto;padding:0 8px" id="sb-peers"></div>'+voiceHtml+'<div class="user-panel"><div class="peer-av" style="background:linear-gradient(135deg,'+S.me.color+'30,'+S.me.color+'10);border:2px solid '+S.me.color+'55;color:'+S.me.color+';width:32px;height:32px;min-width:32px;font-size:12px"><div class="st-dot" style="background:var(--grn)"></div>'+esc(S.me.avatar)+'</div><div style="flex:1"><div style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+S.me.color+'">'+esc(S.me.name)+'</div><div style="font-size:10px;color:var(--fnt)" id="user-mode">Connecting...</div></div></div></div><div class="chat-area"><div class="chat-header"><button class="menu-btn" id="menu-btn" style="background:none;border:none;color:var(--mut);cursor:pointer;padding:4px;display:none">☰</button><span id="mode-badge" class="relay-badge relay">RELAY</span><h3>Room Chat</h3><span style="font-size:11px;color:var(--grn);font-family:var(--mono);margin-left:8px" title="End-to-end encrypted">🔒 E2E</span><span style="color:var(--fnt);font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:12px" id="hdr-info">connecting...</span><button id="tog-mem" style="background:none;border:none;color:var(--txt);cursor:pointer;padding:6px;border-radius:6px;display:flex;align-items:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></button><button id="tog-diag" style="background:none;border:none;color:var(--fnt);cursor:pointer;padding:6px;border-radius:6px;font-size:14px;font-family:var(--mono)" title="Diagnostics">🔧</button></div><div class="msg-list" id="msg-list"></div><div class="typing-bar" id="typ-bar"></div><div id="mobile-voice" style="display:none"></div><div id="reply-bar" class="reply-bar" style="display:none"></div><div class="input-area"><div class="input-row"><input type="file" id="file-in" style="display:none" multiple><input type="file" id="gif-in" style="display:none" accept="image/gif,.gif"><button id="attach-btn" title="Attach file" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--acc);font-size:14px;display:flex;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg></button><button id="gif-btn" title="Send GIF" style="padding:6px 8px;cursor:pointer;border-radius:4px;background:none;border:1px solid var(--brd);color:var(--mut);font-size:12px;font-family:var(--mono);font-weight:800;display:flex;align-items:center;flex-shrink:0;letter-spacing:1px;line-height:1">GIF</button><input id="msg-in" placeholder="Send a message…" autocomplete="off"><button id="mobile-mic-btn" title="Voice chat" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--mut);font-size:14px;display:none;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button><button class="send-btn" id="send-btn" title="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button></div></div></div><div class="members-panel" id="mem-panel"><div id="mem-hdr" class="mem-header">ONLINE — 1</div><div id="mem-list"></div></div><div id="diag-panel" style="display:none;position:fixed;bottom:0;right:0;width:420px;max-width:90vw;max-height:50vh;background:var(--bg0);border:1px solid var(--brdL);border-radius:12px 0 0 0;z-index:100;overflow:hidden;box-shadow:0 -4px 24px rgba(0,0,0,.5)"><div style="padding:10px 14px;border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:8px"><span style="font-size:14px">🔧</span><span style="font-size:12px;font-weight:700;color:var(--acc);font-family:var(--mono);flex:1">DIAGNOSTICS</span><button id="diag-close" style="background:none;border:none;color:var(--mut);cursor:pointer;font-size:16px">✕</button></div><div id="diag-log" style="padding:8px 12px;overflow-y:auto;max-height:calc(50vh - 40px);font-family:var(--mono);font-size:11px;line-height:1.8"></div></div>'}
+  return '<div class="sidebar" id="sidebar"><div class="sb-header"><span style="font-size:20px">⚡</span><h2>NEXUS P2P</h2></div><div style="padding:12px 16px"><div class="room-code-box" id="copy-code" title="Click to copy"><div style="flex:1"><div style="font-size:10px;color:var(--mut);font-weight:600;letter-spacing:1px">ROOM CODE</div><div style="font-family:var(--mono);font-size:16px;color:var(--acc);font-weight:700;letter-spacing:2px">'+S.roomCode+'</div></div><span style="font-size:16px;color:var(--mut)">📋</span></div><div style="font-size:11px;color:var(--fnt);text-align:center;margin-top:4px">Share this code to invite others</div></div><div class="share-row"><button id="share-link-btn" title="Copy invite link">🔗 Link</button><button id="share-qr-btn" title="Show QR code">📱 QR</button></div><div style="padding:8px 16px 4px"><button class="panic-btn" id="panic-btn" title="Emergency wipe — destroy all data">🚨 PANIC</button></div><div style="padding:4px 16px 8px"><div style="height:1px;background:var(--brd)"></div></div><div style="padding:4px 16px 8px;font-size:10px;font-weight:700;letter-spacing:1.5px;color:var(--fnt)" id="sb-count">PEERS — 1</div><div style="flex:1;overflow-y:auto;padding:0 8px" id="sb-peers"></div>'+voiceHtml+'<div class="user-panel"><div class="peer-av" style="background:linear-gradient(135deg,'+S.me.color+'30,'+S.me.color+'10);border:2px solid '+S.me.color+'55;color:'+S.me.color+';width:32px;height:32px;min-width:32px;font-size:12px"><div class="st-dot" style="background:var(--grn)"></div>'+esc(S.me.avatar)+'</div><div style="flex:1"><div style="font-family:var(--mono);font-size:12px;font-weight:700;color:'+S.me.color+'">'+esc(S.me.name)+'</div><div style="font-size:10px;color:var(--fnt)" id="user-mode">Connecting...</div></div></div></div><div class="chat-area"><div class="chat-header"><button class="menu-btn" id="menu-btn" style="background:none;border:none;color:var(--mut);cursor:pointer;padding:4px;display:none">☰</button><span id="mode-badge" class="relay-badge relay">RELAY</span><h3>Room Chat</h3><span style="font-size:11px;color:var(--grn);font-family:var(--mono);margin-left:8px" title="End-to-end encrypted">🔒 E2E</span><span style="color:var(--fnt);font-size:13px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-left:12px" id="hdr-info">connecting...</span><button id="tog-mem" style="background:none;border:none;color:var(--txt);cursor:pointer;padding:6px;border-radius:6px;display:flex;align-items:center"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/></svg></button><button id="tog-diag" style="background:none;border:none;color:var(--fnt);cursor:pointer;padding:6px;border-radius:6px;font-size:14px;font-family:var(--mono)" title="Diagnostics">🔧</button><button id="tog-mute" class="mute-btn" title="Toggle sound">'+(S.muted?"🔇":"🔔")+'</button></div><div class="msg-list" id="msg-list"></div><div class="typing-bar" id="typ-bar"></div><div id="mobile-voice" style="display:none"></div><div id="reply-bar" class="reply-bar" style="display:none"></div><div class="input-area"><div class="input-row"><input type="file" id="file-in" style="display:none" multiple><input type="file" id="gif-in" style="display:none" accept="image/gif,.gif"><button id="attach-btn" title="Attach file" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--acc);font-size:14px;display:flex;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/></svg></button><button id="gif-btn" title="Send GIF" style="padding:6px 8px;cursor:pointer;border-radius:4px;background:none;border:1px solid var(--brd);color:var(--mut);font-size:12px;font-family:var(--mono);font-weight:800;display:flex;align-items:center;flex-shrink:0;letter-spacing:1px;line-height:1">GIF</button><input id="msg-in" placeholder="Send a message…" autocomplete="off"><button id="mobile-mic-btn" title="Voice chat" style="padding:10px;cursor:pointer;border-radius:4px;background:none;border:none;color:var(--mut);font-size:14px;display:none;align-items:center;flex-shrink:0;min-width:36px;justify-content:center"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1a3 3 0 00-3 3v8a3 3 0 006 0V4a3 3 0 00-3-3z"/><path d="M19 10v2a7 7 0 01-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/></svg></button><button class="send-btn" id="send-btn" title="Send"><svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></button></div></div></div><div class="members-panel" id="mem-panel"><div id="mem-hdr" class="mem-header">ONLINE — 1</div><div id="mem-list"></div></div><div id="diag-panel" style="display:none;position:fixed;bottom:0;right:0;width:420px;max-width:90vw;max-height:50vh;background:var(--bg0);border:1px solid var(--brdL);border-radius:12px 0 0 0;z-index:100;overflow:hidden;box-shadow:0 -4px 24px rgba(0,0,0,.5)"><div style="padding:10px 14px;border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:8px"><span style="font-size:14px">🔧</span><span style="font-size:12px;font-weight:700;color:var(--acc);font-family:var(--mono);flex:1">DIAGNOSTICS</span><button id="diag-close" style="background:none;border:none;color:var(--mut);cursor:pointer;font-size:16px">✕</button></div><div id="diag-log" style="padding:8px 12px;overflow-y:auto;max-height:calc(50vh - 40px);font-family:var(--mono);font-size:11px;line-height:1.8"></div></div>'}
 
 function bindChat(){
   const inp=document.getElementById("msg-in");inp?.focus();
@@ -1001,8 +1039,15 @@ function bindChat(){
   document.getElementById("tog-mem")?.addEventListener("click",()=>{S.showMembers=!S.showMembers;const p=document.getElementById("mem-panel");if(p)p.style.display=S.showMembers?"":"none"});
   document.getElementById("menu-btn")?.addEventListener("click",()=>{S.mobileSidebar=!S.mobileSidebar;document.getElementById("sidebar")?.classList.toggle("open",S.mobileSidebar)});
   document.getElementById("tog-diag")?.addEventListener("click",()=>{const p=document.getElementById("diag-panel");if(p){p.style.display=p.style.display==="none"?"block":"none";if(p.style.display==="block"){const el=document.getElementById("diag-log");if(el){el.innerHTML=S.diag.map(d=>'<div style="color:'+(d.ok===true?"var(--grn)":d.ok===false?"var(--red)":"var(--mut)")+'"><span style="opacity:.5">'+d.t+'</span> '+(d.ok===true?"✓ ":d.ok===false?"✗ ":"• ")+esc(d.msg)+'</div>').join("");el.scrollTop=el.scrollHeight}}}});
+  document.getElementById("tog-mute")?.addEventListener("click",()=>{S.muted=!S.muted;try{localStorage.setItem("nexus-muted",S.muted?"1":"0")}catch(e){}const btn=document.getElementById("tog-mute");if(btn)btn.textContent=S.muted?"🔇":"🔔"});
   document.getElementById("diag-close")?.addEventListener("click",()=>{const p=document.getElementById("diag-panel");if(p)p.style.display="none"});
   document.getElementById("attach-btn")?.addEventListener("click",()=>document.getElementById("file-in")?.click());
+  // Scroll listener for read receipts and unread divider
+  const msgList=document.getElementById("msg-list");
+  if(msgList){msgList.addEventListener("scroll",()=>{
+    const atBottom=msgList.scrollHeight-msgList.scrollTop-msgList.clientHeight<120;
+    if(atBottom){S.unreadDividerTs=0;sendSeen();qr()}
+  })}
   document.getElementById("gif-btn")?.addEventListener("click",toggleGifPanel);
   document.getElementById("file-in")?.addEventListener("change",e=>{const files=e.target.files;if(files)for(const f of files)sendFile(f);e.target.value=""});
   document.getElementById("gif-in")?.addEventListener("change",e=>{const files=e.target.files;if(files)for(const f of files)sendFile(f);e.target.value=""});
@@ -1041,28 +1086,40 @@ function bindVoice(){
 
 // ── Smart Updates ──────────────────────────────────────────────────────────
 let lastHash="";
-function mHash(){return S.messages.length+"|"+S.messages.slice(-5).map(m=>m.id+(m.edited?"e":"")+JSON.stringify(m.reactions||{})).join(",")}
+function mHash(){return S.messages.length+"|"+S.messages.slice(-5).map(m=>m.id+(m.edited?"e":"")+JSON.stringify(m.reactions||{})).join(",")+"|"+[...S.readReceipts.values()].map(r=>r.ts).join(",")}
 function updateMsgs(){
   const el=document.getElementById("msg-list");if(!el)return;
   const h=mHash();if(h===lastHash)return;lastHash=h;
   const near=el.scrollHeight-el.scrollTop-el.clientHeight<120;
+  // Calculate max seen timestamp across all peers
+  let maxSeen=0;S.readReceipts.forEach(r=>{if(r.ts>maxSeen)maxSeen=r.ts});
+  // Build seen-by tooltips per timestamp
+  function seenTooltip(ts){const names=[];S.readReceipts.forEach(r=>{if(r.ts>=ts)names.push(r.userName)});return names.join(", ")}
   let html='<div style="padding:32px 16px 16px"><div style="width:56px;height:56px;border-radius:28px;background:var(--bg3);display:flex;align-items:center;justify-content:center;font-size:28px;margin-bottom:12px">🔒</div><h2 style="font-size:22px;font-weight:800;color:#fff;margin:0 0 4px">Peer-to-Peer Room</h2><p style="color:var(--mut);font-size:13px">End-to-end encrypted. No data stored.</p></div>';
-  let ld="",lu="",lt=0;
+  let ld="",lu="",lt=0,unreadShown=false;
   for(const m of S.messages){
     const date=fmtDate(m.ts);
     if(date!==ld){html+='<div class="date-divider"><div class="line"></div><span>'+date+'</span><div class="line"></div></div>';ld=date;lu=""}
+    // Unread divider
+    if(!unreadShown&&S.unreadDividerTs&&!m.system&&m.ts>S.unreadDividerTs&&m.userId!==S.me?.id){
+      html+='<div class="unread-divider"><div class="line"></div><span>NEW MESSAGES</span><div class="line"></div></div>';
+      unreadShown=true;
+    }
     if(m.system){html+='<div class="message system"><span style="color:var(--fnt);font-size:12px;font-style:italic">'+esc(m.content)+'</span></div>';lu="";continue}
     const compact=m.userId===lu&&(m.ts-lt)<300000;const own=m.userId===S.me.id;
+    // Read receipt ticks for own messages
+    let tickHtml="";
+    if(own){const seen=maxSeen>=m.ts;tickHtml='<span class="read-ticks'+(seen?" seen":"")+'" title="'+(seen?"Seen by "+seenTooltip(m.ts):"Delivered")+'">✓'+(seen?"✓":"")+'</span>'}
     let rh="";if(m.reactions&&Object.keys(m.reactions).length){rh='<div class="reactions">';for(const[em,rd]of Object.entries(m.reactions)){rh+='<button class="reaction'+(rd.users.includes(S.me.id)?" mine":"")+'" onclick="doReact(\''+m.id+"','"+em+"'\")>"+em+"<span>"+rd.count+"</span></button>"}rh+="</div>"}
     const acts='<div class="msg-actions"><button class="act-btn" onclick="showEmoji(this,\''+m.id+'\')" title="React">😊</button><button class="act-btn" onclick="setReply(\''+m.id+'\')" title="Reply">↩️</button>'+(own?'<button class="act-btn" onclick="startEdit(\''+m.id+'\')" title="Edit">✏️</button><button class="act-btn" onclick="doDelete(\''+m.id+'\')" title="Delete">🗑️</button>':"")+"</div>";
     const replyHtml=m.replyTo?'<div class="reply-preview" onclick="scrollToMsg(\''+esc(m.replyTo.id)+'\')"><div class="reply-author">↩ '+esc(m.replyTo.userName)+'</div><div class="reply-text">'+esc(m.replyTo.content||"[file]")+'</div></div>':"";
     const fh=m.file?renderFileMsg(m):"";
     const bodyContent=m.file?(m.content?esc(m.content):""):renderContent(m.content);
-    if(compact){html+='<div class="message compact" data-mid="'+m.id+'">'+acts+replyHtml+(bodyContent?'<div class="msg-body" id="b-'+m.id+'">'+bodyContent+(m.edited?' <span style="font-size:10px;color:var(--fnt)">(edited)</span>':"")+"</div>":"")+fh+rh+"</div>"}
-    else{html+='<div class="message msg-enter" data-mid="'+m.id+'">'+acts+'<div class="peer-av" style="background:linear-gradient(135deg,'+m.userColor+'30,'+m.userColor+'10);border:2px solid '+m.userColor+'55;color:'+m.userColor+';width:38px;height:38px;min-width:38px;font-size:14px">'+esc(m.userAvatar)+'</div><div style="flex:1;min-width:0"><div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px"><span class="msg-author" style="color:'+m.userColor+'">'+esc(m.userName)+'</span><span class="msg-time">'+fmtTime(m.ts)+"</span>"+(m.edited?'<span style="font-size:10px;color:var(--fnt)">(edited)</span>':"")+"</div>"+replyHtml+(bodyContent?'<div class="msg-body" id="b-'+m.id+'">'+bodyContent+"</div>":"")+fh+rh+"</div></div>"}
+    if(compact){html+='<div class="message compact" data-mid="'+m.id+'">'+acts+'<span class="hover-time" title="'+fmtTimeFull(m.ts)+'">'+fmtTime(m.ts)+'</span>'+replyHtml+(bodyContent?'<div class="msg-body" id="b-'+m.id+'">'+bodyContent+(m.edited?' <span style="font-size:10px;color:var(--fnt)">(edited)</span>':"")+'</div>':"")+fh+tickHtml+rh+"</div>"}
+    else{html+='<div class="message msg-enter" data-mid="'+m.id+'">'+acts+'<div class="peer-av" style="background:linear-gradient(135deg,'+m.userColor+'30,'+m.userColor+'10);border:2px solid '+m.userColor+'55;color:'+m.userColor+';width:38px;height:38px;min-width:38px;font-size:14px">'+esc(m.userAvatar)+'</div><div style="flex:1;min-width:0"><div style="display:flex;align-items:baseline;gap:8px;margin-bottom:2px"><span class="msg-author" style="color:'+m.userColor+'">'+esc(m.userName)+'</span><span class="msg-time">'+fmtTime(m.ts)+"</span>"+(m.edited?'<span style="font-size:10px;color:var(--fnt)">(edited)</span>':"")+'<span class="msg-time" style="display:none" title="'+fmtTimeFull(m.ts)+'"></span>'+tickHtml+"</div>"+replyHtml+(bodyContent?'<div class="msg-body" id="b-'+m.id+'">'+bodyContent+"</div>":"")+fh+rh+"</div></div>"}
     lu=m.userId;lt=m.ts;
   }
-  el.innerHTML=html;if(near)el.scrollTop=el.scrollHeight;
+  el.innerHTML=html;if(near){el.scrollTop=el.scrollHeight;sendSeen()}
 }
 function updatePeers(){
   const peers=getPeers();const all=[S.me,...peers.map(p=>({name:p.name,color:p.color,avatar:p.avatar,id:p.id}))];const n=all.length;
